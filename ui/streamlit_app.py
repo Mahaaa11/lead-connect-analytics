@@ -180,7 +180,7 @@ def _render_vente_daily_tracking(
         for uploaded in baseline_client_files:
             try:
                 df = processor._read_excel(uploaded, is_history=False)
-                baseline_frames.append(daily_tracking.baseline_from_client_upload(df))
+                baseline_frames.append(vente_tracking.baseline_from_client_upload(df))
             except Exception as exc:
                 st.error(f"Lecture {uploaded.name} : {exc}")
         if baseline_client_files:
@@ -224,6 +224,12 @@ def _render_vente_daily_tracking(
     data_client_df: pd.DataFrame | None = None
 
     try:
+        import importlib
+
+        importlib.reload(vente_tracking)
+        importlib.reload(daily_tracking)
+        importlib.reload(database)
+
         with st.spinner("Analyse du jour…"):
             if client_sources:
                 parts = []
@@ -244,7 +250,9 @@ def _render_vente_daily_tracking(
                     data_client=data_client_df,
                     cohort_name="Injoignable (99)" if 99 in cohort_status_codes else "Cohorte",
                 )
-                if save_to_history and cohort_result:
+                if save_to_history and cohort_result and hasattr(
+                    database, "save_cohort_tracking_batch"
+                ):
                     database.save_cohort_tracking_batch(cohort_result)
 
             ventes = daily_tracking.merge_daily_vente_sources(
@@ -349,7 +357,11 @@ def _render_vente_daily_tracking(
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    cohort_history = database.load_cohort_tracking_history()
+    cohort_history = (
+        database.load_cohort_tracking_history()
+        if hasattr(database, "load_cohort_tracking_history")
+        else []
+    )
     if not history.empty or cohort_history:
         with st.expander("Historique des analyses enregistrées"):
             if cohort_history:

@@ -68,6 +68,11 @@ def baseline_from_client_db(
     return frame[cols].reset_index(drop=True)
 
 
+def baseline_from_client_upload(df: pd.DataFrame) -> pd.DataFrame:
+    """Load baseline from upload, always including Status_Code when available."""
+    return baseline_from_client_db(df, include_status_code=True)
+
+
 def baseline_from_recyclage_export(source: str | BinaryIO | BytesIO) -> pd.DataFrame:
     """Load multi-sheet Recyclage_Data_Client export (sheet name = statut)."""
     if hasattr(source, "seek"):

@@ -27,22 +27,10 @@ DEFAULT_COHORT_LABELS = ["Injoignable"]
 
 
 def baseline_from_client_upload(df: pd.DataFrame) -> pd.DataFrame:
-    """Load baseline from upload, always including Status_Code when available."""
-    import inspect
+    """Backward-compatible alias — implementation lives in vente_tracking."""
+    from engine.vente_tracking import baseline_from_client_upload as _fn
 
-    fn = __import__("engine.vente_tracking", fromlist=["baseline_from_client_db"]).baseline_from_client_db
-    if "include_status_code" in inspect.signature(fn).parameters:
-        return fn(df, include_status_code=True)
-
-    frame = fn(df)
-    norm = _normalize_columns(df.copy())
-    status_col = _find_column(norm, STATUS_ALIASES) or "STATUS"
-    tel_col = _find_column(norm, TEL_ALIASES) or "TEL"
-    norm["TEL"] = _clean_tel_db(norm[tel_col].astype(str))
-    norm["Status_Code"] = pd.to_numeric(norm[status_col], errors="coerce")
-    codes = norm.drop_duplicates("TEL", keep="last").set_index("TEL")["Status_Code"]
-    frame["Status_Code"] = frame["TEL"].map(codes)
-    return frame
+    return _fn(df)
 
 
 def parse_day_label_from_filename(name: str) -> str:
