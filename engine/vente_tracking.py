@@ -33,7 +33,11 @@ def _apply_status_label(series: pd.Series, lib_series: pd.Series | None = None) 
     return mapped.fillna("Autre")
 
 
-def baseline_from_client_db(df: pd.DataFrame) -> pd.DataFrame:
+def baseline_from_client_db(
+    df: pd.DataFrame,
+    *,
+    include_status_code: bool = False,
+) -> pd.DataFrame:
     """Build TEL → statut/couleur from a flat client DB or Book2-style file."""
     frame = _normalize_columns(df.copy())
     tel_col = _find_column(frame, TEL_ALIASES) or "TEL"
@@ -56,7 +60,12 @@ def baseline_from_client_db(df: pd.DataFrame) -> pd.DataFrame:
             frame["Couleur"] = (pd.Timestamp.today().normalize() - dates).dt.days.apply(_assign_color)
         else:
             frame["Couleur"] = "Unknown"
-    return frame[["TEL", "Statut", "Couleur"]].reset_index(drop=True)
+    if include_status_code:
+        frame["Status_Code"] = pd.to_numeric(frame["STATUS"], errors="coerce")
+    cols = ["TEL", "Statut", "Couleur"]
+    if include_status_code:
+        cols.append("Status_Code")
+    return frame[cols].reset_index(drop=True)
 
 
 def baseline_from_recyclage_export(source: str | BinaryIO | BytesIO) -> pd.DataFrame:
@@ -116,7 +125,10 @@ def merge_baseline_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     for frame in frames:
         if frame is None or frame.empty:
             continue
-        part = frame[["TEL", "Statut", "Couleur"]].copy()
+        cols = ["TEL", "Statut", "Couleur"]
+        if "Status_Code" in frame.columns:
+            cols.append("Status_Code")
+        part = frame[cols].copy()
         combined = pd.concat([combined, part], ignore_index=True)
     if combined.empty:
         return combined

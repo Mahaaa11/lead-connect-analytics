@@ -21,6 +21,7 @@ import engine.data_client_dashboard as data_client_dashboard
 import engine.forecast as forecast
 import engine.processor as processor
 import engine.vente_tracking as vente_tracking
+import engine.daily_tracking as daily_tracking
 from ui.data_client_board import render_data_client_board
 from ui.ventes_board import render_ventes_page
 from ui.app_shell import (
@@ -127,13 +128,19 @@ def _render_vente_daily_tracking(
     baseline_recyclage_file,
     baseline_client_files: list,
     daily_vente_files: list,
+    daily_histo_files: list | None = None,
+    cohort_status_codes: list[int] | None = None,
     save_to_history: bool,
     analyze_btn: bool,
     capture_baseline_btn: bool,
 ) -> None:
+    daily_histo_files = daily_histo_files or []
+    cohort_status_codes = cohort_status_codes if cohort_status_codes is not None else [99]
+
     st.markdown(
-        "**Suivi quotidien** — pour chaque vente (`STATUS = 1` dans `export_data_client`), "
-        "retrouver le statut d'origine dans l'export recyclage ou la base **avant** la journée."
+        "**Suivi quotidien** — deux analyses automatiques chaque jour :\n"
+        "1) **Cohorte baseline** (ex. Injoignables 99) → statut devenu dans l'historique.\n"
+        "2) **Ventes du jour** → statut d'origine sur le baseline (Book1 / export recyclage du matin)."
     )
 
     baseline_frames: list[pd.DataFrame] = []
@@ -173,7 +180,7 @@ def _render_vente_daily_tracking(
         for uploaded in baseline_client_files:
             try:
                 df = processor._read_excel(uploaded, is_history=False)
-                baseline_frames.append(vente_tracking.baseline_from_client_db(df))
+                baseline_frames.append(daily_tracking.baseline_from_client_upload(df))
             except Exception as exc:
                 st.error(f"Lecture {uploaded.name} : {exc}")
         if baseline_client_files:
@@ -187,116 +194,176 @@ def _render_vente_daily_tracking(
 
     history = database.load_vente_tracking_history()
     if not history.empty:
-        col_c.metric("Analyses enregistrées", f"{history['Batch_id'].nunique():,}")
+        col_c.metric("Analyses ventes", f"{history['Batch_id'].nunique():,}")
         col_d.metric("Ventes historisées", f"{len(history):,}")
 
     if not analyze_btn:
         st.info(
-            "Workflow : 1) Capturer le baseline **avant** les appels (ou uploader l'export recyclage du matin). "
-            "2) Uploader les `export_data_client` du jour. 3) **Analyser les ventes**."
+            "Workflow : 1) Uploader le **baseline du matin** (Book1, export recyclage ou capture base). "
+            "2) Uploader **export_histo** + **export_data_client** du jour. "
+            "3) **Lancer le suivi du jour**."
         )
         return
 
-    if not daily_vente_files:
-        st.warning("Uploadez au moins un export client du jour (`export_data_client`).")
-        return
     if baseline.empty:
-        st.warning("Aucun baseline disponible. Capturez ou uploadez l'export recyclage.")
+        st.warning("Aucun baseline disponible. Uploadez Book1 / export recyclage ou capturez la base.")
         return
+    if not daily_histo_files and not daily_vente_files:
+        st.warning("Uploadez au moins l'export historique ou data client du jour.")
+        return
+
+    histo_sources: list[tuple[Any, str]] = [
+        (u, daily_tracking.parse_day_label_from_filename(u.name)) for u in daily_histo_files
+    ]
+    client_sources: list[tuple[Any, str]] = [
+        (u, daily_tracking.parse_day_label_from_filename(u.name)) for u in daily_vente_files
+    ]
+
+    vente_result: dict[str, Any] | None = None
+    cohort_result: dict[str, Any] | None = None
+    data_client_df: pd.DataFrame | None = None
 
     try:
-        vente_sources = []
-        for uploaded in daily_vente_files:
-            name = uploaded.name.lower()
-            if "0807" in name or "08-07" in name or "08_07" in name:
-                day = "08/07"
-            elif "0907" in name or "09-07" in name or "09_07" in name:
-                day = "09/07"
-            else:
-                day = uploaded.name.rsplit(".", 1)[0][-10:]
-            vente_sources.append((uploaded, day))
+        with st.spinner("Analyse du jour…"):
+            if client_sources:
+                parts = []
+                for source, _day in client_sources:
+                    if hasattr(source, "seek"):
+                        source.seek(0)
+                    parts.append(processor._read_excel(source, is_history=False))
+                data_client_df = pd.concat(parts, ignore_index=True) if parts else None
 
-        with st.spinner("Analyse des ventes…"):
-            ventes = vente_tracking.extract_ventes_from_client_exports(vente_sources)
-            result = vente_tracking.compute_vente_origin_tracking(
-                baseline,
-                ventes,
-                baseline_source=baseline_label,
+            if histo_sources:
+                histo_df = daily_tracking.load_histo_exports(histo_sources)
+                cohort_labels = ["Injoignable"] if 99 in cohort_status_codes else []
+                cohort_result = daily_tracking.compute_cohort_evolution(
+                    baseline,
+                    histo_df,
+                    cohort_status_codes=cohort_status_codes or None,
+                    cohort_status_labels=cohort_labels or None,
+                    data_client=data_client_df,
+                    cohort_name="Injoignable (99)" if 99 in cohort_status_codes else "Cohorte",
+                )
+                if save_to_history and cohort_result:
+                    database.save_cohort_tracking_batch(cohort_result)
+
+            ventes = daily_tracking.merge_daily_vente_sources(
+                histo_sources or None,
+                client_sources or None,
             )
-            if save_to_history:
-                saved = database.save_vente_tracking_batch(result)
-                st.caption(f"{saved} ligne(s) enregistrée(s) dans l'historique.")
+            if not ventes.empty:
+                vente_result = vente_tracking.compute_vente_origin_tracking(
+                    baseline,
+                    ventes,
+                    baseline_source=baseline_label,
+                )
+                if save_to_history:
+                    saved = database.save_vente_tracking_batch(vente_result)
+                    st.caption(f"{saved} vente(s) enregistrée(s) dans l'historique.")
     except Exception as exc:
-        st.error(f"Analyse ventes : {exc}")
+        st.error(f"Analyse : {exc}")
         return
 
-    totals = result["totals"]
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Ventes (lignes)", f"{totals['vente_rows']:,}")
-    m2.metric("TEL uniques", f"{totals['vente_unique_tels']:,}")
-    m3.metric("Matchées", f"{totals['matched_rows']:,}")
-    m4.metric(
-        "Taux match",
-        f"{round(100 * totals['matched_rows'] / max(totals['vente_rows'], 1), 1)}%",
-    )
+    tab_cohorte, tab_ventes = st.tabs(["Évolution cohorte", "Ventes → baseline"])
 
-    by_origin = result.get("summary_by_origin", pd.DataFrame())
-    by_day = result.get("summary_by_day", pd.DataFrame())
-    detail = result.get("detail", pd.DataFrame())
+    with tab_cohorte:
+        if cohort_result is None:
+            st.info("Uploadez l'**export_histo** du jour pour l'analyse de cohorte.")
+        elif cohort_result.get("cohort_size", 0) == 0:
+            st.warning(
+                f"Aucune fiche dans la cohorte (codes {cohort_status_codes}). "
+                "Vérifiez le baseline ou les codes statut."
+            )
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Cohorte baseline", f"{cohort_result['cohort_size']:,}")
+            c2.metric("Toujours même statut", f"{cohort_result.get('still_same_count', 0):,}")
+            summary = cohort_result.get("summary", pd.DataFrame())
+            repondeur_n = 0
+            if not summary.empty and "Répondeur" in summary["Statut_devenu"].values:
+                repondeur_n = int(summary.loc[summary["Statut_devenu"] == "Répondeur", "Nombre"].sum())
+            c3.metric("Devenus Répondeur", f"{repondeur_n:,}")
+            if not summary.empty:
+                st.markdown("**Devenu (dernier statut historique)**")
+                st.bar_chart(summary.set_index("Statut_devenu")["Nombre"])
+                st.dataframe(summary, hide_index=True, use_container_width=True)
+            detail = cohort_result.get("detail", pd.DataFrame())
+            if not detail.empty:
+                st.markdown("**Détail cohorte**")
+                st.dataframe(detail, hide_index=True, use_container_width=True)
 
-    if not by_origin.empty:
-        st.markdown("**Statut d'origine → Vente**")
-        chart_df = by_origin.set_index("Statut_origine")
-        if "Taux_%" in chart_df.columns:
-            st.bar_chart(chart_df["Taux_%"])
-        st.dataframe(by_origin, hide_index=True, use_container_width=True)
+    with tab_ventes:
+        if vente_result is None:
+            st.info("Aucune vente (STATUS=1) dans les fichiers du jour.")
+        else:
+            totals = vente_result["totals"]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Ventes", f"{totals['vente_unique_tels']:,}")
+            m2.metric("Lignes", f"{totals['vente_rows']:,}")
+            m3.metric("Matchées baseline", f"{totals['matched_unique_tels']:,}")
+            m4.metric(
+                "Taux match",
+                f"{round(100 * totals['matched_rows'] / max(totals['vente_rows'], 1), 1)}%",
+            )
 
-    if not by_day.empty:
-        st.markdown("**Ventes par jour**")
-        st.dataframe(by_day, hide_index=True, use_container_width=True)
+            by_origin = vente_result.get("summary_by_origin", pd.DataFrame())
+            by_day = vente_result.get("summary_by_day", pd.DataFrame())
+            detail = vente_result.get("detail", pd.DataFrame())
 
-    if not detail.empty:
-        st.markdown("**Détail des ventes**")
-        show_cols = [
-            c
-            for c in [
-                "TEL",
-                "Jour_Vente",
-                "PRENOM",
-                "NOM",
-                "Statut_origine",
-                "Couleur_origine",
-                "Source_baseline",
-                "Matched",
-            ]
-            if c in detail.columns
-        ]
-        st.dataframe(detail[show_cols], hide_index=True, use_container_width=True)
-
-        export_df = vente_tracking.tracking_detail_for_export(result)
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            export_df.to_excel(writer, sheet_name="Ventes", index=False)
             if not by_origin.empty:
-                by_origin.to_excel(writer, sheet_name="Synthèse_origine", index=False)
+                st.markdown("**Statut Book1 / baseline → Vente**")
+                chart_df = by_origin.set_index("Statut_origine")
+                if "Taux_%" in chart_df.columns:
+                    st.bar_chart(chart_df["Taux_%"])
+                st.dataframe(by_origin, hide_index=True, use_container_width=True)
+
             if not by_day.empty:
-                by_day.to_excel(writer, sheet_name="Synthèse_jour", index=False)
+                st.dataframe(by_day, hide_index=True, use_container_width=True)
+
+            if not detail.empty:
+                show_cols = [
+                    c
+                    for c in [
+                        "TEL",
+                        "Jour_Vente",
+                        "PRENOM",
+                        "NOM",
+                        "Statut_origine",
+                        "Couleur_origine",
+                        "Source",
+                        "Matched",
+                    ]
+                    if c in detail.columns
+                ]
+                st.dataframe(detail[show_cols], hide_index=True, use_container_width=True)
+
+    if vente_result or cohort_result:
+        excel_bytes = daily_tracking.export_daily_tracking_workbook(
+            vente_result=vente_result,
+            cohort_result=cohort_result,
+        )
         st.download_button(
-            "Télécharger le rapport ventes",
-            data=buffer.getvalue(),
-            file_name=f"ventes_tracking_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            "Télécharger rapport suivi du jour",
+            data=excel_bytes,
+            file_name=f"suivi_quotidien_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    if not history.empty:
+    cohort_history = database.load_cohort_tracking_history()
+    if not history.empty or cohort_history:
         with st.expander("Historique des analyses enregistrées"):
-            hist_summary = (
-                history.groupby(["Batch_id", "Jour_Vente", "Statut_origine"])
-                .size()
-                .reset_index(name="Ventes")
-                .sort_values(["Batch_id", "Ventes"], ascending=[False, False])
-            )
-            st.dataframe(hist_summary.head(200), hide_index=True, use_container_width=True)
+            if cohort_history:
+                st.markdown("**Cohortes**")
+                st.dataframe(pd.DataFrame(cohort_history).tail(20), hide_index=True, use_container_width=True)
+            if not history.empty:
+                st.markdown("**Ventes**")
+                hist_summary = (
+                    history.groupby(["Batch_id", "Jour_Vente", "Statut_origine"])
+                    .size()
+                    .reset_index(name="Ventes")
+                    .sort_values(["Batch_id", "Ventes"], ascending=[False, False])
+                )
+                st.dataframe(hist_summary.head(200), hide_index=True, use_container_width=True)
 
 
 def _render_data_client_dashboard(
@@ -1924,17 +1991,30 @@ with st.sidebar:
             )
         if baseline_mode in ("client_upload", "store_snapshot+upload"):
             baseline_client_files = st.file_uploader(
-                "Fichiers client baseline",
+                "Fichiers client baseline (Book1, Book2…)",
                 type=["xls", "xlsx", "xlsm"],
                 accept_multiple_files=True,
                 key="ventes_vt_baseline_client",
             ) or []
+        daily_histo_files = st.file_uploader(
+            "Export historique du jour",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            accept_multiple_files=True,
+            key="ventes_vt_daily_histo",
+        ) or []
         daily_vente_files = st.file_uploader(
-            "Exports ventes du jour",
+            "Export data client du jour",
             type=["xls", "xlsx", "xlsm"],
             accept_multiple_files=True,
             key="ventes_vt_daily",
         ) or []
+        cohort_status_codes = st.multiselect(
+            "Cohorte à suivre (code STATUS baseline)",
+            options=[99, 93, 4, 2, 94, 92, 96],
+            default=[99],
+            format_func=lambda c: f"{c} — Injoignable" if c == 99 else str(c),
+            key="ventes_vt_cohort_codes",
+        )
         save_vente_history = st.checkbox(
             "Enregistrer dans l'historique",
             value=True,
@@ -1946,7 +2026,8 @@ with st.sidebar:
             key="ventes_vt_capture",
         )
         analyze_ventes_btn = st.button(
-            "Analyser ventes du jour",
+            "Lancer le suivi du jour",
+            type="primary",
             use_container_width=True,
             key="ventes_vt_analyze",
         )
@@ -1955,6 +2036,8 @@ with st.sidebar:
             "baseline_recyclage_file": baseline_recyclage_file,
             "baseline_client_files": baseline_client_files,
             "daily_vente_files": daily_vente_files,
+            "daily_histo_files": daily_histo_files,
+            "cohort_status_codes": cohort_status_codes,
             "save_to_history": save_vente_history,
             "analyze_btn": analyze_ventes_btn,
             "capture_baseline_btn": capture_baseline_btn,
@@ -2253,17 +2336,30 @@ with st.sidebar:
             )
         if baseline_mode in ("client_upload", "store_snapshot+upload"):
             baseline_client_files = st.file_uploader(
-                "Fichiers client baseline (Book2, data-client…)",
+                "Fichiers client baseline (Book1, Book2…)",
                 type=["xls", "xlsx", "xlsm"],
                 accept_multiple_files=True,
                 key="vt_baseline_client",
             ) or []
+        daily_histo_files = st.file_uploader(
+            "Export historique du jour",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            accept_multiple_files=True,
+            key="vt_daily_histo",
+        ) or []
         daily_vente_files = st.file_uploader(
-            "Exports ventes du jour (export_data_client)",
+            "Export data client du jour",
             type=["xls", "xlsx", "xlsm"],
             accept_multiple_files=True,
             key="vt_daily_ventes",
         ) or []
+        cohort_status_codes = st.multiselect(
+            "Cohorte à suivre (code STATUS baseline)",
+            options=[99, 93, 4, 2, 94, 92, 96],
+            default=[99],
+            format_func=lambda c: f"{c} — Injoignable" if c == 99 else str(c),
+            key="vt_cohort_codes",
+        )
         save_vente_history = st.checkbox(
             "Enregistrer dans l'historique",
             value=True,
@@ -2275,7 +2371,7 @@ with st.sidebar:
             key="vt_capture_baseline",
         )
         analyze_ventes_btn = st.button(
-            "Analyser les ventes",
+            "Lancer le suivi du jour",
             type="primary",
             use_container_width=True,
             key="vt_analyze",
@@ -2287,6 +2383,8 @@ with st.sidebar:
             "baseline_recyclage_file": baseline_recyclage_file,
             "baseline_client_files": baseline_client_files,
             "daily_vente_files": daily_vente_files,
+            "daily_histo_files": daily_histo_files,
+            "cohort_status_codes": cohort_status_codes,
             "save_to_history": save_vente_history,
             "analyze_btn": analyze_ventes_btn,
             "capture_baseline_btn": capture_baseline_btn,

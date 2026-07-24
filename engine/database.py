@@ -852,3 +852,34 @@ def save_vente_tracking_batch(
 
 def load_vente_tracking_history() -> pd.DataFrame:
     return _load_vente_results_storage()
+
+
+def save_cohort_tracking_batch(
+    result: dict[str, Any],
+    *,
+    batch_id: str | None = None,
+) -> None:
+    """Persist cohort evolution summary in app meta for daily history."""
+    summary = result.get("summary", pd.DataFrame())
+    if summary.empty and not result.get("cohort_size"):
+        return
+    meta = _load_meta()
+    log = meta.setdefault("cohort_tracking", [])
+    batch = batch_id or datetime.now().strftime("%Y-%m-%d")
+    log.append(
+        {
+            "batch_id": batch,
+            "cohort_name": result.get("cohort_name"),
+            "cohort_size": result.get("cohort_size", 0),
+            "still_same_count": result.get("still_same_count", 0),
+            "summary": summary.to_dict(orient="records"),
+            "analyzed_at": result.get("analyzed_at", datetime.now().isoformat(timespec="seconds")),
+        }
+    )
+    meta["cohort_tracking"] = log[-60:]
+    _save_meta(meta)
+
+
+def load_cohort_tracking_history() -> list[dict[str, Any]]:
+    meta = _load_meta()
+    return list(meta.get("cohort_tracking", []))
