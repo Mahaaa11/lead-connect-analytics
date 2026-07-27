@@ -31,6 +31,63 @@ def _status_code_text(status: pd.Series) -> pd.Series:
     return out.replace({"": pd.NA, "nan": pd.NA})
 
 
+_LIB_ALIASES: dict[str, str] = {
+    "pas de collaboration": "Pas de collaboration",
+    "repondeur": "Répondeur",
+    "refus": "Refus",
+    "injoignable": "Injoignable",
+    "absent": "Absent",
+    "indisponible": "Indisponible",
+    "hors cible": "Hors cible",
+    "ne jamais appeler": "Ne jamais appeler",
+    "rappel personnel": "Rappel Personnel",
+    "a relancer": "A Relancer",
+    "pas decisionaire": "Pas décisionnaire",
+    "pas décisionnaire": "Pas décisionnaire",
+    "vente": "Vente",
+}
+
+
+def group_status_label(
+    label: object,
+    *,
+    status_mapping: dict[int, str] | None = None,
+) -> str:
+    """Merge variants like « Répondeur (sous-code …) » into a single display name."""
+    if label is None or (isinstance(label, float) and pd.isna(label)):
+        return "Autre"
+    text = str(label).strip()
+    if not text or text.casefold() in _JUNK_LABELS:
+        return "Autre"
+    if " (sous-code " in text:
+        text = text.split(" (sous-code ", 1)[0].strip()
+    if text.startswith("Code "):
+        code_part = text[5:].strip()
+        mapping = status_mapping or DEFAULT_STATUS_MAPPING
+        try:
+            mapped = mapping.get(int(code_part))
+            if mapped:
+                return mapped
+        except ValueError:
+            pass
+    mapping = status_mapping or DEFAULT_STATUS_MAPPING
+    canonical = {v.casefold(): v for v in mapping.values()}
+    folded = text.casefold()
+    if folded in canonical:
+        return canonical[folded]
+    if folded in _LIB_ALIASES:
+        return _LIB_ALIASES[folded]
+    return text
+
+
+def group_status_labels(
+    series: pd.Series,
+    *,
+    status_mapping: dict[int, str] | None = None,
+) -> pd.Series:
+    return series.map(lambda value: group_status_label(value, status_mapping=status_mapping))
+
+
 def apply_resolved_status_labels(
     frame: pd.DataFrame,
     *,
@@ -52,14 +109,13 @@ def apply_resolved_status_labels(
 
     if "STATUS_STATUS" in frame.columns:
         sub_mapped = _map_status(frame["STATUS_STATUS"], status_mapping)
-        code_text = _status_code_text(frame[status_col])
-        fallback = sub_mapped.astype(str) + " (sous-code " + frame["STATUS_STATUS"].astype(str) + " · statut " + code_text.astype(str) + ")"
-        fallback = fallback.where(sub_mapped.notna())
+        fallback = sub_mapped.where(sub_mapped.notna())
         label = label.fillna(fallback)
 
     code_text = _status_code_text(frame[status_col])
     label = label.fillna("Code " + code_text.astype(str))
-    return label.fillna("Autre").rename(target_col)
+    label = label.fillna("Autre")
+    return group_status_labels(label, status_mapping=status_mapping).rename(target_col)
 
 
 def resolve_status_label(

@@ -136,7 +136,7 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
         with col_s:
             st.markdown("**Quel statut mène à la vente ?**")
             st.caption(
-                "Libellé résolu via mapping, **LIB_DETAIL**, ou sous-code **STATUS_STATUS**. "
+                "Statuts regroupés par nom (ex. tous les « Répondeur », avec ou sans sous-code). "
                 f"Encore « Autre » : **{metrics.get('ventes_autre_categorie', 0):,}**."
             )
             if not by_status.empty:

@@ -24,6 +24,7 @@ from engine.vente_tracking import NOT_FOUND_LABEL, extract_ventes_from_client_ex
 
 DEFAULT_COHORT_STATUS_CODES = [99]
 DEFAULT_COHORT_LABELS = ["Injoignable"]
+NOT_IN_DAILY_HISTO_LABEL = "Non appelé ce jour (absent export histo)"
 
 
 def baseline_from_client_upload(df: pd.DataFrame) -> pd.DataFrame:
@@ -243,6 +244,11 @@ def compute_cohort_evolution(
         tel = base_row["TEL"]
         sub = histo[(histo["TEL_DB"] == tel) | (histo["TEL"] == tel)]
         if sub.empty:
+            devenu_data = data_map.get(tel, "Absent data")
+            # Export histo « par-jour » = appels du jour seulement ; pas d'activité → absent du fichier.
+            devenu_histo = NOT_IN_DAILY_HISTO_LABEL
+            if devenu_data not in ("Absent data", ""):
+                devenu_histo = f"{NOT_IN_DAILY_HISTO_LABEL} · data: {devenu_data}"
             rows.append(
                 {
                     "TEL": tel,
@@ -251,8 +257,9 @@ def compute_cohort_evolution(
                     "Status_Code_baseline": base_row.get("Status_Code"),
                     "contacts_histo": 0,
                     "dernier_contact": None,
-                    "devenu_histo": "Pas dans historique",
-                    "devenu_data": data_map.get(tel, "Absent data"),
+                    "devenu_histo": devenu_histo,
+                    "devenu_data": devenu_data,
+                    "appele_ce_jour": False,
                 }
             )
             continue
@@ -268,13 +275,17 @@ def compute_cohort_evolution(
                 "dernier_contact": latest.get("DATETIME"),
                 "devenu_histo": devenu,
                 "devenu_data": data_map.get(tel, "Absent data"),
+                "appele_ce_jour": True,
             }
         )
 
     detail = pd.DataFrame(rows)
+    # Synthèse : regrouper le libellé long « non appelé… »
+    summary_key = detail["devenu_histo"].str.replace(
+        rf" · data:.*", "", regex=True
+    )
     summary = (
-        detail["devenu_histo"]
-        .value_counts()
+        summary_key.value_counts()
         .rename_axis("Statut_devenu")
         .reset_index(name="Nombre")
     )

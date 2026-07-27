@@ -285,12 +285,21 @@ def _render_vente_daily_tracking(
         else:
             c1, c2, c3 = st.columns(3)
             c1.metric("Cohorte baseline", f"{cohort_result['cohort_size']:,}")
-            c2.metric("Toujours même statut", f"{cohort_result.get('still_same_count', 0):,}")
+            not_called = 0
+            detail = cohort_result.get("detail", pd.DataFrame())
+            if not detail.empty and "appele_ce_jour" in detail.columns:
+                not_called = int((~detail["appele_ce_jour"]).sum())
+            c2.metric("Non appelés ce jour", f"{not_called:,}")
             summary = cohort_result.get("summary", pd.DataFrame())
             repondeur_n = 0
             if not summary.empty and "Répondeur" in summary["Statut_devenu"].values:
                 repondeur_n = int(summary.loc[summary["Statut_devenu"] == "Répondeur", "Nombre"].sum())
             c3.metric("Devenus Répondeur", f"{repondeur_n:,}")
+            st.caption(
+                "L'**export histo par-jour** ne contient que les appels **de cette journée**. "
+                "Les fiches « non appelé ce jour » étaient injoignables sur Book2 mais n'ont pas été "
+                "contactées aujourd'hui — ce n'est pas une erreur de matching."
+            )
             if not summary.empty:
                 st.markdown("**Devenu (dernier statut historique)**")
                 st.bar_chart(summary.set_index("Statut_devenu")["Nombre"])

@@ -9,6 +9,7 @@ from typing import Any, BinaryIO
 import pandas as pd
 
 from engine.dashboard import EXTENDED_STATUS_MAPPING, SALE_STATUS_CODE
+from engine.status_labels import group_status_label
 from engine.processor import (
     STATUS_ALIASES,
     TEL_ALIASES,
@@ -48,7 +49,7 @@ def baseline_from_client_db(
     frame["Statut"] = _apply_status_label(
         frame["STATUS"],
         frame["LIB_STATUS"] if "LIB_STATUS" in frame.columns else None,
-    )
+    ).map(lambda s: group_status_label(s))
     if "COLOR" in frame.columns:
         frame["Couleur"] = frame["COLOR"]
     elif "Color" in frame.columns:

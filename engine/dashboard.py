@@ -278,8 +278,8 @@ def _prepare_history_frame(
     hist = hist[hist["TEL"].isin(db_tels)].copy()
     hist["DATE"] = _parse_date_column(hist["DATE"])
     hist = hist[hist["DATE"].notna()].copy()
-    hist["Status_Category"] = _apply_status_labels(hist, status_mapping)
     hist["Status_Label"] = apply_resolved_status_labels(hist, status_mapping=status_mapping)
+    hist["Status_Category"] = hist["Status_Label"]
     hist["Color"] = (pd.Timestamp.today().normalize() - hist["DATE"]).dt.days.apply(_assign_color)
     return hist.reset_index(drop=True)
 
