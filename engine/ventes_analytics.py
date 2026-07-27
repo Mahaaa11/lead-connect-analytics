@@ -14,7 +14,7 @@ from engine.dashboard import (
     _prepare_history_frame,
     _status_code_series,
 )
-from engine.status_labels import breakdown_autre_ventes, build_status_code_catalog, group_status_labels
+from engine.status_labels import breakdown_autre_ventes, build_status_code_catalog, collapse_status_table, group_status_labels
 
 
 def _filter_ventes_period(
@@ -78,7 +78,11 @@ def _conversion_table(
     merged["Part_des_ventes_%"] = (
         (100 * merged["Ventes"] / total_ventes).round(2) if total_ventes else 0.0
     )
-    return merged.sort_values(["Ventes", "Taux_conversion_%"], ascending=[False, False])
+    return collapse_status_table(
+        merged.sort_values(["Ventes", "Taux_conversion_%"], ascending=[False, False]),
+        label_col,
+        status_mapping=EXTENDED_STATUS_MAPPING,
+    )
 
 
 def _filter_prior_statuses(vente_trans: pd.DataFrame, prior_statuses: list[str]) -> pd.DataFrame:
@@ -151,8 +155,10 @@ def compute_ventes_analytics(
         columns=["Statut_précédent", "Couleur_précédente", "Ventes"]
     )
     if not vente_trans.empty:
+        vt = vente_trans.copy()
+        vt[label_col] = group_status_labels(vt[label_col], status_mapping=EXTENDED_STATUS_MAPPING)
         status_color_matrix = (
-            vente_trans.groupby([label_col, "Prior_Color_Display"], dropna=False)
+            vt.groupby([label_col, "Prior_Color_Display"], dropna=False)
             .size()
             .reset_index(name="Ventes")
             .rename(

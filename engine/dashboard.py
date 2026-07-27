@@ -21,7 +21,7 @@ from engine.processor import (
     _parse_date_column,
     process_data,
 )
-from engine.status_labels import apply_resolved_status_labels, group_transition_frame
+from engine.status_labels import apply_resolved_status_labels, collapse_status_table, group_transition_frame
 
 _COLOR_DISPLAY: dict[str, str] = {
     "Green": "Vert",
@@ -230,6 +230,11 @@ def _compute_vente_conversion(transitions: pd.DataFrame, hist: pd.DataFrame) -> 
     )
     conversion_by_prior = conversion_by_prior.sort_values(
         ["Ventes", "Taux_conversion_%"], ascending=[False, False]
+    )
+    conversion_by_prior = collapse_status_table(
+        conversion_by_prior,
+        "Statut_précédent",
+        status_mapping=EXTENDED_STATUS_MAPPING,
     )
 
     return {

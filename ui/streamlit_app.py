@@ -15,6 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+APP_VERSION = "2026-07-27b"
+
 import engine.database as database
 import engine.dashboard as dashboard
 import engine.data_client_dashboard as data_client_dashboard
@@ -544,8 +546,18 @@ def _render_ventes_analytics(
 
     with tab_analyse:
         try:
+            import importlib
+
+            import engine.status_labels as _status_labels
+            import engine.dashboard as _dashboard
+            import engine.ventes_analytics as _ventes_analytics
+
+            importlib.reload(_status_labels)
+            importlib.reload(_dashboard)
+            importlib.reload(_ventes_analytics)
+
             with st.spinner("Analyse des parcours vente…"):
-                metrics = ventes_analytics.compute_ventes_analytics(
+                metrics = _ventes_analytics.compute_ventes_analytics(
                     frames[0],
                     frames[1],
                     year=year,
@@ -1803,6 +1815,7 @@ inject_global_theme()
 
 with st.sidebar:
     render_sidebar_brand()
+    st.caption(f"Version {APP_VERSION}")
     app_mode = render_navigation(default="overview")
 
     store_ready = database.store_exists()

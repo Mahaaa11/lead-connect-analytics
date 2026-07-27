@@ -10,7 +10,7 @@ import pandas as pd
 from engine.processor import DEFAULT_STATUS_MAPPING, _map_status
 
 _JUNK_LABELS = {"", "nan", "none", "null", "0", "1", "2", "3", "4", "5", "6", "7", "-1"}
-_SOUS_CODE_SUFFIX = re.compile(r"\s*\(sous-code\b.*", re.IGNORECASE)
+_SOUS_CODE_SUFFIX = re.compile(r"\s*\(sous[\s\-‑–—]*code\b.*", re.IGNORECASE)
 
 
 def is_meaningful_label(value: object) -> bool:
@@ -62,6 +62,10 @@ def group_status_label(
     if not text or text.casefold() in _JUNK_LABELS:
         return "Autre"
     text = _SOUS_CODE_SUFFIX.sub("", text).strip()
+    if not text and "(" in str(label):
+        raw = str(label).strip()
+        if re.search(r"sous[\s\-‑–—]*code", raw, re.IGNORECASE):
+            text = raw.split("(", 1)[0].strip()
     if text.startswith("Code "):
         code_part = text[5:].strip()
         mapping = status_mapping or DEFAULT_STATUS_MAPPING
@@ -106,6 +110,47 @@ def group_transition_frame(
         if col in out.columns:
             out[col] = group_status_labels(out[col], status_mapping=status_mapping)
     return out
+
+
+def collapse_status_table(
+    df: pd.DataFrame,
+    label_col: str,
+    *,
+    status_mapping: dict[int, str] | None = None,
+) -> pd.DataFrame:
+    """Merge rows that share the same grouped status name."""
+    if df.empty or label_col not in df.columns:
+        return df
+    out = df.copy()
+    out[label_col] = group_status_labels(out[label_col], status_mapping=status_mapping)
+    sum_cols = [c for c in ("Ventes", "Transitions", "Transitions_depuis_statut") if c in out.columns]
+    if not sum_cols:
+        return out.drop_duplicates(subset=[label_col], keep="first")
+    collapsed = out.groupby(label_col, as_index=False)[sum_cols].sum()
+    if "Ventes" in collapsed.columns and "Transitions" in collapsed.columns:
+        collapsed["Taux_conversion_%"] = (
+            (100 * collapsed["Ventes"] / collapsed["Transitions"].replace(0, pd.NA))
+            .fillna(0)
+            .round(2)
+        )
+        total = int(collapsed["Ventes"].sum())
+        collapsed["Part_des_ventes_%"] = (
+            (100 * collapsed["Ventes"] / total).round(2) if total else 0.0
+        )
+    elif "Ventes" in collapsed.columns and "Transitions_depuis_statut" in collapsed.columns:
+        collapsed["Taux_conversion_%"] = (
+            (
+                100
+                * collapsed["Ventes"]
+                / collapsed["Transitions_depuis_statut"].replace(0, pd.NA)
+            )
+            .fillna(0)
+            .round(2)
+        )
+    sort_cols = [c for c in ("Ventes", "Taux_conversion_%") if c in collapsed.columns]
+    if sort_cols:
+        collapsed = collapsed.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+    return collapsed.reset_index(drop=True)
 
 
 def apply_resolved_status_labels(

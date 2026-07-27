@@ -13,6 +13,7 @@ from engine.data_client_dashboard import (
     STATUS_DISPLAY_ORDER,
     color_hex_for_label,
 )
+from engine.status_labels import collapse_status_table
 from ui.brand_theme import NAVY, STATUS_CHART_COLORS
 
 
@@ -140,6 +141,7 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
                 f"Encore « Autre » : **{metrics.get('ventes_autre_categorie', 0):,}**."
             )
             if not by_status.empty:
+                by_status = collapse_status_table(by_status, "Statut_précédent")
                 value_col = "Part_des_ventes_%" if "Part_des_ventes_%" in by_status.columns else "Ventes"
                 _render_colored_bar_chart(
                     by_status,
