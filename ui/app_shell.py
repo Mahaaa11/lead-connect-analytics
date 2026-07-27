@@ -26,16 +26,27 @@ NAV_OPERATIONS = [
 
 NAV_LABELS = {key: label for key, label in NAV_ANALYTICS + NAV_OPERATIONS}
 
+
 def inject_global_theme() -> None:
-    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+    import importlib
+    from ui import brand_theme
+
+    importlib.reload(brand_theme)
+    st.markdown(brand_theme.GLOBAL_CSS, unsafe_allow_html=True)
 
 
 def render_sidebar_brand() -> None:
+    import importlib
+    from ui import brand_logo
+
+    importlib.reload(brand_logo)
     st.markdown(
-        """
-        <div style="text-align:center;padding:14px 0 18px 0;">
-            <div class="brand-title">LEAD <span class="brand-accent">&amp;</span> CONNECT</div>
-            <div class="brand-sub">Analytics Platform · FÈS</div>
+        f"""
+        <div class="lc-sidebar-logo">
+            <div class="lc-logo-sidebar-wrap">
+                {brand_logo.logo_img_html(css_class="lc-logo-sidebar", max_width="176px")}
+            </div>
+            <div class="brand-sub">Plateforme Analytics · FÈS</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -92,15 +103,14 @@ def render_global_data_source(
 
 
 def render_section_header(title: str, subtitle: str, *, badge: str | None = None) -> None:
-    badge_html = f'<span class="badge">{badge}</span>' if badge else ""
+    badge_html = f'<span class="lc-badge">{badge}</span>' if badge else ""
     st.markdown(
         f"""
-        <div style="display:flex;justify-content:space-between;align-items:flex-end;
-            padding-bottom:14px;margin-bottom:8px;border-bottom:2px solid #E5E7EB;">
+        <div class="lc-page-hero" style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;">
             <div>
-                <h2 style="margin:0;font-size:1.45rem;font-weight:700;color:{NAVY};
-                    letter-spacing:0.03em;">{title}</h2>
-                <p style="margin:6px 0 0 0;font-size:0.85rem;color:{TEXT_SECONDARY};">{subtitle}</p>
+                <div class="lc-eyebrow">Lead &amp; Connect Analytics</div>
+                <h2 class="lc-title">{title}</h2>
+                <p class="lc-subtitle">{subtitle}</p>
             </div>
             {badge_html}
         </div>
@@ -132,50 +142,62 @@ def _color_bars_html(top_colors: list[dict[str, Any]]) -> str:
     return f"<div class='color-bars'>{''.join(rows)}</div>"
 
 
-def _overview_html(metrics: dict[str, Any]) -> str:
+def _overview_html(metrics: dict[str, Any], *, overview_css: str | None = None) -> str:
+    css = overview_css or OVERVIEW_CSS
     store = metrics.get("store", {})
     last_update = str(store.get("last_update", "—"))[:16].replace("T", " ")
     positive = metrics.get("positive_rate_pct")
     positive_txt = f"{positive}%" if positive is not None else "—"
 
     return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"/><style>{OVERVIEW_CSS}</style></head>
+<html><head><meta charset="utf-8"/><style>{css}</style></head>
 <body><div class="wrap">
 <div class="hero">
   <div>
-    <h1>Vue d'ensemble</h1>
-    <p>Plateforme analytics tout-en-un — Data Client, performance, ventes et opérations</p>
+    <div class="eyebrow">Analytics Platform · FÈS</div>
+    <h1>Vue d'ensemble<br/><em>Data · Performance · Ventes</em></h1>
+    <p>Plateforme tout-en-un — transformez vos exports en insights actionnables pour le recyclage et la conversion.</p>
   </div>
   <div class="badge">MAJ {metrics['generated_at']}</div>
 </div>
 
+<div class="quote-strip">
+  Great analytics is not just numbers — it's intentional decisions behind every call.
+</div>
+
 <div class="kpi-grid">
   <div class="kpi b">
+    <div class="num">01</div>
     <div class="kpi-label">Total fiches</div>
     <div class="kpi-val">{_fmt(metrics['total_fiches'])}</div>
     <div class="kpi-sub">Data Client</div>
   </div>
   <div class="kpi g">
+    <div class="num">02</div>
     <div class="kpi-label">Exploitables</div>
     <div class="kpi-val">{_fmt(metrics['exploitable_count'])}</div>
     <div class="kpi-sub">{metrics['exploitable_pct']}% du total</div>
   </div>
   <div class="kpi p">
+    <div class="num">03</div>
     <div class="kpi-label">Ventes {metrics['year']}</div>
     <div class="kpi-val">{_fmt(metrics['ventes_year_count'])}</div>
     <div class="kpi-sub">{metrics['ventes_year_pct']}% vendus cette année</div>
   </div>
   <div class="kpi o">
+    <div class="num">04</div>
     <div class="kpi-label">Contacts actifs</div>
     <div class="kpi-val">{_fmt(metrics['active_contacts'])}</div>
     <div class="kpi-sub">Taux vente {metrics['vente_rate_pct']}%</div>
   </div>
   <div class="kpi r">
+    <div class="num">05</div>
     <div class="kpi-label">Obsolètes</div>
     <div class="kpi-val">{_fmt(metrics['stale_count'])}</div>
     <div class="kpi-sub">{metrics['stale_pct']}% · { _fmt(metrics['recyclable_count']) } recyclables</div>
   </div>
   <div class="kpi s">
+    <div class="num">06</div>
     <div class="kpi-label">Ventes 7j</div>
     <div class="kpi-val">{_fmt(metrics['recent_ventes_7d'])}</div>
     <div class="kpi-sub">Taux positif {positive_txt}</div>
@@ -206,17 +228,21 @@ def _overview_html(metrics: dict[str, Any]) -> str:
 <div class="panel">
   <div class="panel-title">Modules analytics</div>
   <div class="modules">
-    <div class="mod"><h3>Data Client</h3><p>KPIs, donuts couleur/statut, chaîne exploitables, filtres année/mois.</p></div>
-    <div class="mod"><h3>Performance</h3><p>Conversion vente, parcours statuts, obsolètes, doublons, relances, suivi ventes.</p></div>
-    <div class="mod"><h3>Prévisionnel</h3><p>Projection J+1 à J+7, quotas, exclusion Book1, export coloré.</p></div>
-    <div class="mod"><h3>Export recyclage</h3><p>Sélection par statut/couleur, quotas, durées Onoff, masque Excel.</p></div>
-    <div class="mod"><h3>Base de données</h3><p>Fusion quotidienne, persistance SQLite, filtres FICHIER, export complet.</p></div>
-    <div class="mod"><h3>Ventes</h3><p>Suivi quotidien statut d'origine, baseline snapshot, analyse export_data_client.</p></div>
+    <div class="mod"><div class="mod-num">01</div><h3>Data Client</h3><p>KPIs, donuts couleur/statut, chaîne exploitables, filtres année/mois.</p></div>
+    <div class="mod"><div class="mod-num">02</div><h3>Performance</h3><p>Conversion vente, parcours statuts, obsolètes, doublons, relances, suivi ventes.</p></div>
+    <div class="mod"><div class="mod-num">03</div><h3>Prévisionnel</h3><p>Projection J+1 à J+7, quotas, exclusion Book1, export coloré.</p></div>
+    <div class="mod"><div class="mod-num">04</div><h3>Export recyclage</h3><p>Sélection par statut/couleur, quotas, durées Onoff, masque Excel.</p></div>
+    <div class="mod"><div class="mod-num">05</div><h3>Base de données</h3><p>Fusion quotidienne, persistance SQLite, filtres FICHIER, export complet.</p></div>
+    <div class="mod"><div class="mod-num">06</div><h3>Ventes</h3><p>Suivi quotidien statut d'origine, baseline snapshot, analyse export_data_client.</p></div>
   </div>
 </div>
 </div></body></html>"""
 
 
-def render_overview_board(metrics: dict[str, Any], *, height: int = 920) -> None:
-    html = _overview_html(metrics)
-    components.html(html, height=height, scrolling=False)
+def render_overview_board(metrics: dict[str, Any], *, height: int = 1380) -> None:
+    import importlib
+    from ui import brand_theme
+
+    importlib.reload(brand_theme)
+    html = _overview_html(metrics, overview_css=brand_theme.OVERVIEW_CSS)
+    components.html(html, height=height, scrolling=True)

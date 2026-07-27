@@ -883,3 +883,18 @@ def save_cohort_tracking_batch(
 def load_cohort_tracking_history() -> list[dict[str, Any]]:
     meta = _load_meta()
     return list(meta.get("cohort_tracking", []))
+
+
+def ensure_app_user() -> None:
+    _ensure_storage()
+    storage.ensure_default_user()
+
+
+def authenticate(username: str, password: str) -> bool:
+    _ensure_storage()
+    return storage.verify_app_login(username, password)
+
+
+def change_app_password(username: str, current_password: str, new_password: str) -> tuple[bool, str]:
+    _ensure_storage()
+    return storage.update_app_password(username, current_password, new_password)

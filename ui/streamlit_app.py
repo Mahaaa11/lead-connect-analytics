@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import importlib
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,9 +16,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-APP_VERSION = "2026-07-27b"
+APP_VERSION = "2026-07-27n"
 
 import engine.database as database
+importlib.reload(database)
+import ui.brand_logo as brand_logo
+import ui.app_shell as app_shell
+import ui.login_page as login_page
+importlib.reload(brand_logo)
+importlib.reload(app_shell)
+importlib.reload(login_page)
 import engine.dashboard as dashboard
 import engine.data_client_dashboard as data_client_dashboard
 import engine.forecast as forecast
@@ -34,6 +42,24 @@ from ui.app_shell import (
     render_section_header,
     render_sidebar_brand,
 )
+from ui.login_page import (
+    init_auth_session,
+    render_account_settings,
+    render_login_page,
+    render_logout_button,
+)
+
+# Re-bind after hot-reload so Streamlit always uses latest UI code.
+inject_global_theme = app_shell.inject_global_theme
+render_global_data_source = app_shell.render_global_data_source
+render_navigation = app_shell.render_navigation
+render_overview_board = app_shell.render_overview_board
+render_section_header = app_shell.render_section_header
+render_sidebar_brand = app_shell.render_sidebar_brand
+init_auth_session = login_page.init_auth_session
+render_account_settings = login_page.render_account_settings
+render_login_page = login_page.render_login_page
+render_logout_button = login_page.render_logout_button
 import engine.analytics_hub as analytics_hub
 import engine.ventes_analytics as ventes_analytics
 
@@ -1813,8 +1839,15 @@ st.set_page_config(
 
 inject_global_theme()
 
+init_auth_session()
+
+if not st.session_state.get("authenticated"):
+    render_login_page()
+    st.stop()
+
 with st.sidebar:
     render_sidebar_brand()
+    render_logout_button()
     st.caption(f"Version {APP_VERSION}")
     app_mode = render_navigation(default="overview")
 
@@ -2085,6 +2118,8 @@ with st.sidebar:
 
     elif app_mode == "database":
         store_ready = database.store_exists()
+        render_account_settings()
+        st.divider()
         merge_master_db = merge_master_hist = merge_master_onoff = None
         init_db = init_hist = init_onoff = None
         init_btn = False

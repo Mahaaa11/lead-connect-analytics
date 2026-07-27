@@ -91,6 +91,11 @@ def init_schema(engine: Engine | None = None) -> None:
         analyzed_at TEXT NOT NULL,
         batch_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS app_users (
+        username TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_history_tel ON history_rows (tel);
     CREATE INDEX IF NOT EXISTS idx_onoff_tel ON onoff_calls (tel);
     CREATE INDEX IF NOT EXISTS idx_onoff_totals_tel ON onoff_totals (tel);
@@ -717,3 +722,86 @@ def load_vente_results(engine: Engine | None = None) -> pd.DataFrame:
             "batch_id": "Batch_id",
         }
     )
+
+
+def ensure_default_user(engine: Engine | None = None) -> None:
+    from engine.auth import default_credentials, hash_password
+
+    engine = engine or get_engine()
+    init_schema(engine)
+    with engine.begin() as conn:
+        count = conn.execute(text("SELECT COUNT(*) FROM app_users")).scalar() or 0
+        if count > 0:
+            return
+        username, password = default_credentials()
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            text(
+                """
+                INSERT INTO app_users (username, password_hash, updated_at)
+                VALUES (:username, :password_hash, :updated_at)
+                """
+            ),
+            {
+                "username": username,
+                "password_hash": hash_password(password),
+                "updated_at": now,
+            },
+        )
+
+
+def verify_app_login(username: str, password: str, engine: Engine | None = None) -> bool:
+    from engine.auth import verify_password
+
+    engine = engine or get_engine()
+    ensure_default_user(engine)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT password_hash FROM app_users WHERE username = :username"),
+            {"username": username.strip()},
+        ).fetchone()
+    if not row:
+        return False
+    return verify_password(password, row[0])
+
+
+def update_app_password(
+    username: str,
+    current_password: str,
+    new_password: str,
+    engine: Engine | None = None,
+) -> tuple[bool, str]:
+    from engine.auth import hash_password, verify_password
+
+    user = username.strip()
+    if len(new_password) < 6:
+        return False, "Le nouveau mot de passe doit contenir au moins 6 caractères."
+
+    engine = engine or get_engine()
+    ensure_default_user(engine)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT password_hash FROM app_users WHERE username = :username"),
+            {"username": user},
+        ).fetchone()
+        if not row:
+            return False, "Utilisateur introuvable."
+        if not verify_password(current_password, row[0]):
+            return False, "Mot de passe actuel incorrect."
+
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            text(
+                """
+                UPDATE app_users
+                SET password_hash = :password_hash, updated_at = :updated_at
+                WHERE username = :username
+                """
+            ),
+            {
+                "username": user,
+                "password_hash": hash_password(new_password),
+                "updated_at": now,
+            },
+        )
+    return True, "Mot de passe mis à jour."
