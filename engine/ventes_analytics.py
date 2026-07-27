@@ -14,7 +14,7 @@ from engine.dashboard import (
     _prepare_history_frame,
     _status_code_series,
 )
-from engine.status_labels import breakdown_autre_ventes, build_status_code_catalog
+from engine.status_labels import breakdown_autre_ventes, build_status_code_catalog, group_status_labels
 
 
 def _filter_ventes_period(
@@ -42,6 +42,15 @@ def _conversion_table(
     if transitions.empty or group_col not in transitions.columns:
         return pd.DataFrame(
             columns=[label_col, "Ventes", "Transitions", "Taux_conversion_%", "Part_des_ventes_%"]
+        )
+    transitions = transitions.copy()
+    vente_transitions = vente_transitions.copy()
+    transitions[group_col] = group_status_labels(
+        transitions[group_col], status_mapping=EXTENDED_STATUS_MAPPING
+    )
+    if group_col in vente_transitions.columns:
+        vente_transitions[group_col] = group_status_labels(
+            vente_transitions[group_col], status_mapping=EXTENDED_STATUS_MAPPING
         )
     totals = (
         transitions.groupby(group_col, dropna=False)

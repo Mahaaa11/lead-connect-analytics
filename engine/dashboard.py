@@ -21,7 +21,7 @@ from engine.processor import (
     _parse_date_column,
     process_data,
 )
-from engine.status_labels import apply_resolved_status_labels
+from engine.status_labels import apply_resolved_status_labels, group_transition_frame
 
 _COLOR_DISPLAY: dict[str, str] = {
     "Green": "Vert",
@@ -118,6 +118,7 @@ def _compute_status_transitions(hist: pd.DataFrame) -> pd.DataFrame:
     if "Color" in ordered.columns:
         ordered["Prior_Color"] = ordered.groupby("TEL")["Color"].shift(1)
         ordered["Prior_Color_Display"] = _color_to_display(ordered["Prior_Color"].fillna("Unknown"))
+    ordered = group_transition_frame(ordered, status_mapping=EXTENDED_STATUS_MAPPING)
     transitions = ordered[ordered["Prior_Status"].notna()].copy()
     return transitions.reset_index(drop=True)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pandas as pd
@@ -9,6 +10,7 @@ import pandas as pd
 from engine.processor import DEFAULT_STATUS_MAPPING, _map_status
 
 _JUNK_LABELS = {"", "nan", "none", "null", "0", "1", "2", "3", "4", "5", "6", "7", "-1"}
+_SOUS_CODE_SUFFIX = re.compile(r"\s*\(sous-code\b.*", re.IGNORECASE)
 
 
 def is_meaningful_label(value: object) -> bool:
@@ -59,8 +61,7 @@ def group_status_label(
     text = str(label).strip()
     if not text or text.casefold() in _JUNK_LABELS:
         return "Autre"
-    if " (sous-code " in text:
-        text = text.split(" (sous-code ", 1)[0].strip()
+    text = _SOUS_CODE_SUFFIX.sub("", text).strip()
     if text.startswith("Code "):
         code_part = text[5:].strip()
         mapping = status_mapping or DEFAULT_STATUS_MAPPING
@@ -86,6 +87,25 @@ def group_status_labels(
     status_mapping: dict[int, str] | None = None,
 ) -> pd.Series:
     return series.map(lambda value: group_status_label(value, status_mapping=status_mapping))
+
+
+def group_transition_frame(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...] = (
+        "Status_Label",
+        "Status_Category",
+        "Prior_Status",
+        "Prior_Status_Label",
+    ),
+    *,
+    status_mapping: dict[int, str] | None = None,
+) -> pd.DataFrame:
+    """Apply grouped status names on transition/history columns."""
+    out = frame.copy()
+    for col in columns:
+        if col in out.columns:
+            out[col] = group_status_labels(out[col], status_mapping=status_mapping)
+    return out
 
 
 def apply_resolved_status_labels(
