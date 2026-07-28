@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-28k"
+APP_VERSION = "2026-07-28l"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -54,8 +54,10 @@ def _cached_agent_statistics(
     from engine import agent_analytics
 
     df_hist = database.load_history()
+    df_db = database.load_db()
     return agent_analytics.compute_agent_statistics(
         df_hist,
+        df_db=df_db,
         short_call_threshold_sec=int(threshold),
         days_back=int(days_back) if int(days_back) > 0 else None,
     )
@@ -1777,7 +1779,7 @@ def _render_export_agent_statistics(
 
     cache_key = (
         f"{_store_cache_token()}|upload:{getattr(hist_file, 'name', '')}|"
-        f"{days_back}|{threshold}"
+        f"{days_back}|{threshold}|tv-enrich-v2"
     )
     if not refresh and "agent_stats_metrics" not in st.session_state:
         st.info(
@@ -1801,6 +1803,7 @@ def _render_export_agent_statistics(
                 )
                 metrics = agent_analytics.compute_agent_statistics(
                     hist_df,
+                    df_db=None,
                     short_call_threshold_sec=int(threshold),
                     days_back=int(days_back) if int(days_back) > 0 else None,
                 )

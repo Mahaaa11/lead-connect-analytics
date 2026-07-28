@@ -8,8 +8,10 @@ import pandas as pd
 
 from engine.processor import (
     DEFAULT_STATUS_MAPPING,
+    TEL_ALIASES,
     _find_column,
     _map_status,
+    _normalize_columns,
     _parse_date_column,
 )
 
@@ -25,32 +27,138 @@ AGENT_ALIASES = (
 )
 QUALITY_STATUS_LABELS = ("Refus", "Pas de collaboration")
 DEFAULT_SHORT_CALL_SEC = 4
+_EMPTY_AGENT_VALUES = {"", "nan", "none", "nat", "0", "0.0", "manual"}
+
+
+def _find_column_ci(df: pd.DataFrame, aliases: tuple[str, ...]) -> str | None:
+    upper_map = {str(col).strip().upper(): col for col in df.columns}
+    for alias in aliases:
+        key = alias.upper()
+        if key in upper_map:
+            return upper_map[key]
+    return None
 
 
 def _normalize_agent_label(value: object) -> str:
-    text = str(value or "").strip()
-    if not text or text.lower() in {"nan", "none", "nat", "0", "0.0"}:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "Non renseigné"
+    text = str(value).strip()
+    if not text or text.lower() in _EMPTY_AGENT_VALUES:
+        return "Non renseigné"
+    if text.replace(".", "", 1).isdigit():
         return "Non renseigné"
     return text
 
 
-def prepare_agent_history_frame(df_hist: pd.DataFrame) -> pd.DataFrame:
+def _build_id_tv_agent_map(df: pd.DataFrame) -> dict[int, str]:
+    if "ID_TV" not in df.columns:
+        return {}
+    tv_col = _find_column_ci(df, ("TV",))
+    if not tv_col:
+        return {}
+    mapping: dict[int, str] = {}
+    for _, row in df[[tv_col, "ID_TV"]].dropna(subset=["ID_TV"]).iterrows():
+        label = _normalize_agent_label(row[tv_col])
+        if label == "Non renseigné":
+            continue
+        try:
+            mapping[int(float(row["ID_TV"]))] = label
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def _build_tel_agent_map(df_db: pd.DataFrame | None) -> dict[str, str]:
+    if df_db is None or df_db.empty:
+        return {}
+    db = _normalize_columns(df_db.copy())
+    tel_col = _find_column_ci(db, TEL_ALIASES)
+    agent_col = _find_column_ci(db, AGENT_ALIASES)
+    if not tel_col or not agent_col:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in db[[tel_col, agent_col]].iterrows():
+        tel = str(row[tel_col]).strip()
+        label = _normalize_agent_label(row[agent_col])
+        if tel and label != "Non renseigné":
+            out[tel] = label
+    return out
+
+
+def _resolve_agent_labels(
+    df: pd.DataFrame,
+    *,
+    id_tv_map: dict[int, str],
+    tel_agent_map: dict[str, str],
+) -> pd.Series:
+    agents = pd.Series("Non renseigné", index=df.index, dtype=object)
+
+    tv_col = _find_column_ci(df, ("TV",))
+    if tv_col:
+        agents = df[tv_col].map(_normalize_agent_label)
+
+    missing = agents == "Non renseigné"
+    if missing.any() and "ID_TV" in df.columns and id_tv_map:
+        ids = pd.to_numeric(df.loc[missing, "ID_TV"], errors="coerce")
+
+        def _from_id(value: object) -> str:
+            if pd.isna(value):
+                return "Non renseigné"
+            try:
+                return id_tv_map.get(int(float(value)), "Non renseigné")
+            except (TypeError, ValueError):
+                return "Non renseigné"
+
+        agents.loc[missing] = ids.map(_from_id)
+        missing = agents == "Non renseigné"
+
+    if missing.any() and tel_agent_map and "TEL" in df.columns:
+        agents.loc[missing] = (
+            df.loc[missing, "TEL"]
+            .astype(str)
+            .str.strip()
+            .map(tel_agent_map)
+            .fillna("Non renseigné")
+        )
+        missing = agents == "Non renseigné"
+
+    status_user_col = _find_column_ci(df, ("STATUS_USER",))
+    if missing.any() and status_user_col:
+        agents.loc[missing] = df.loc[missing, status_user_col].map(_normalize_agent_label)
+        agents.loc[missing & (agents == "Non renseigné")] = "Non renseigné"
+
+    return agents
+
+
+def prepare_agent_history_frame(
+    df_hist: pd.DataFrame,
+    *,
+    df_db: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Normalize history for per-agent analytics."""
     if df_hist.empty:
         return pd.DataFrame()
 
-    out = df_hist.copy()
-    agent_col = _find_column(out, AGENT_ALIASES)
-    if not agent_col:
+    out = _normalize_columns(df_hist.copy())
+    if "TEL" not in out.columns:
+        tel_col = _find_column_ci(out, TEL_ALIASES)
+        if tel_col:
+            out = out.rename(columns={tel_col: "TEL"})
+
+    if not _find_column_ci(out, AGENT_ALIASES) and not _find_column_ci(
+        _normalize_columns(df_db.copy()) if df_db is not None and not df_db.empty else pd.DataFrame(),
+        AGENT_ALIASES,
+    ):
         raise ValueError(
-            "Colonne agent introuvable dans l'historique (attendu : TV)."
+            "Colonne agent introuvable (attendu : TV dans l'historique ou la base client)."
         )
 
-    out = out.rename(columns={agent_col: "Agent"})
-    out["Agent"] = out["Agent"].map(_normalize_agent_label)
+    id_tv_map = _build_id_tv_agent_map(out)
+    tel_agent_map = _build_tel_agent_map(df_db)
+    out["Agent"] = _resolve_agent_labels(out, id_tv_map=id_tv_map, tel_agent_map=tel_agent_map)
 
     if "STATUS" not in out.columns:
-        status_col = _find_column(out, ("STATUS", "STATUT", "CODE_STATUS"))
+        status_col = _find_column_ci(out, ("STATUS", "STATUT", "CODE_STATUS"))
         if not status_col:
             raise ValueError("Colonne STATUS introuvable dans l'historique.")
         out = out.rename(columns={status_col: "STATUS"})
@@ -72,11 +180,12 @@ def prepare_agent_history_frame(df_hist: pd.DataFrame) -> pd.DataFrame:
 def compute_agent_statistics(
     df_hist: pd.DataFrame,
     *,
+    df_db: pd.DataFrame | None = None,
     short_call_threshold_sec: int = DEFAULT_SHORT_CALL_SEC,
     days_back: int | None = None,
 ) -> dict[str, Any]:
     """Build agent summary, status mix, and quality alerts for Refus / Pas de collab."""
-    work = prepare_agent_history_frame(df_hist)
+    work = prepare_agent_history_frame(df_hist, df_db=df_db)
     if work.empty:
         return {
             "agents_summary": pd.DataFrame(),
@@ -110,8 +219,9 @@ def compute_agent_statistics(
             "agents_with_alerts": 0,
         }
 
+    threshold = int(short_call_threshold_sec)
     quality_mask = work["Status_Category"].isin(QUALITY_STATUS_LABELS)
-    short_quality = quality_mask & (work["DUREE_SEC"] < int(short_call_threshold_sec))
+    short_quality = quality_mask & (work["DUREE_SEC"] < threshold)
 
     status_counts = (
         work.groupby(["Agent", "Status_Category"])
@@ -183,7 +293,7 @@ def compute_agent_statistics(
 
     quality_detail = work[short_quality].copy()
     if not quality_detail.empty:
-        quality_detail["Alerte"] = "⚠️ < 4s"
+        quality_detail["Alerte"] = f"⚠️ < {threshold}s"
         keep = [
             c
             for c in (
@@ -197,6 +307,8 @@ def compute_agent_statistics(
                 "DUREE",
                 "LIB_STATUS",
                 "LIB_DETAIL",
+                "TV",
+                "ID_TV",
             )
             if c in quality_detail.columns
         ]
@@ -220,7 +332,7 @@ def compute_agent_statistics(
         "quality_detail": quality_detail.reset_index(drop=True),
         "top_status_by_agent": top_mix,
         "period_label": period_label,
-        "short_call_threshold_sec": short_call_threshold_sec,
+        "short_call_threshold_sec": threshold,
         "agent_count": int(summary["Agent"].nunique()),
         "total_calls": int(len(work)),
         "agents_with_alerts": int((summary["Appels_Courts_Qualite"] > 0).sum()),
