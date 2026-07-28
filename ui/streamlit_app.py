@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-28m"
+APP_VERSION = "2026-07-28n"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
