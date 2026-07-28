@@ -45,34 +45,32 @@ def _load_dotenv() -> None:
 def _load_streamlit_secrets() -> None:
     try:
         import streamlit as st
-        from streamlit.errors import StreamlitSecretNotFoundError
     except ImportError:
-        return
-
-    try:
-        secrets = st.secrets
-        _ = secrets.keys()
-    except Exception:
         return
 
     for key in _ENV_KEYS:
         try:
-            if key in secrets:
-                os.environ.setdefault(key, str(secrets[key]))
-        except StreamlitSecretNotFoundError:
-            return
+            value = st.secrets[key]
         except Exception:
             continue
+        if value is None or str(value).strip() == "":
+            continue
+        os.environ.setdefault(key, str(value).strip())
 
     try:
-        for section in secrets:
-            block = secrets[section]
+        import streamlit as st
+
+        for section in st.secrets:
+            block = st.secrets[section]
             if not isinstance(block, dict):
                 continue
             for key, value in block.items():
                 env_key = str(key).upper()
-                if env_key in _ENV_KEYS:
-                    os.environ.setdefault(env_key, str(value))
+                if env_key not in _ENV_KEYS:
+                    continue
+                if value is None or str(value).strip() == "":
+                    continue
+                os.environ.setdefault(env_key, str(value).strip())
     except Exception:
         return
 

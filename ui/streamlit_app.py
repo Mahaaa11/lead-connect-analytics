@@ -12,11 +12,15 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from engine.config_env import bootstrap_env
+
+bootstrap_env()
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-APP_VERSION = "2026-07-27n"
+APP_VERSION = "2026-07-28a"
 
 import engine.database as database
 importlib.reload(database)
@@ -1839,6 +1843,7 @@ st.set_page_config(
 
 inject_global_theme()
 
+bootstrap_env()
 init_auth_session()
 
 if not st.session_state.get("authenticated"):
@@ -1853,6 +1858,8 @@ with st.sidebar:
 
     store_stats = database.get_store_stats()
     store_ready = bool(store_stats.get("initialized"))
+    if store_stats.get("error"):
+        st.error(f"Base PostgreSQL : {store_stats['error']}")
 
     analytics_modes = {"overview", "data_client", "ventes", "dashboard"}
     if app_mode in analytics_modes:

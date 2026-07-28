@@ -30,10 +30,7 @@ STORE_DIR = Path(__file__).resolve().parents[1] / "data" / "store"
 
 
 def _ensure_storage() -> None:
-    """Initialize storage and reload module so Streamlit picks up engine changes."""
-    import importlib
-
-    importlib.reload(storage)
+    """Initialize schema once per process (no module reload — stable on Streamlit Cloud)."""
     storage.init_schema()
     storage.migrate_pickle_store_if_needed()
 
@@ -150,25 +147,39 @@ def _count_onoff_totals() -> int:
 
 
 def get_store_stats() -> dict[str, Any]:
-    _ensure_storage()
-    meta = _load_meta()
-    initialized = store_exists()
-    stats: dict[str, Any] = {
-        "initialized": initialized,
-        "backend": storage.backend_label(),
-        "database_url_hint": _database_url_hint(),
-        "last_update": meta.get("last_update"),
-        "db_rows": storage.count_client_rows(),
-        "hist_rows": storage.count_history_rows(),
-        "onoff_rows": storage.count_onoff_rows(),
-        "onoff_totals_rows": _count_onoff_totals(),
-        "updates": meta.get("updates", []),
-    }
-    if initialized:
-        stats["db_tels"] = storage.count_client_tels()
-        stats["hist_tels"] = storage.count_history_tels()
-        stats["onoff_tels"] = storage.count_onoff_tels()
-    return stats
+    try:
+        _ensure_storage()
+        meta = _load_meta()
+        initialized = store_exists()
+        stats: dict[str, Any] = {
+            "initialized": initialized,
+            "backend": storage.backend_label(),
+            "database_url_hint": _database_url_hint(),
+            "last_update": meta.get("last_update"),
+            "db_rows": storage.count_client_rows(),
+            "hist_rows": storage.count_history_rows(),
+            "onoff_rows": storage.count_onoff_rows(),
+            "onoff_totals_rows": _count_onoff_totals(),
+            "updates": meta.get("updates", []),
+        }
+        if initialized:
+            stats["db_tels"] = storage.count_client_tels()
+            stats["hist_tels"] = storage.count_history_tels()
+            stats["onoff_tels"] = storage.count_onoff_tels()
+        return stats
+    except Exception as exc:
+        return {
+            "initialized": False,
+            "backend": "PostgreSQL",
+            "database_url_hint": _database_url_hint(),
+            "last_update": None,
+            "db_rows": 0,
+            "hist_rows": 0,
+            "onoff_rows": 0,
+            "onoff_totals_rows": 0,
+            "updates": [],
+            "error": str(exc),
+        }
 
 
 def _database_url_hint() -> str:
