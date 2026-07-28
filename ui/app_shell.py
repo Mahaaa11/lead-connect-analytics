@@ -89,40 +89,23 @@ def render_global_data_source(
     store_stats: dict[str, Any] | None = None,
     key_prefix: str = "global",
 ) -> dict[str, Any]:
-    """Shared data source selector for analytics modules."""
+    """Shared data source for analytics modules — always the persistent database."""
     st.markdown("**Source de données**")
-    use_store = st.checkbox(
-        "Utiliser la base persistante",
-        value=store_exists,
-        disabled=not store_exists,
-        key=f"{key_prefix}_use_store",
-    )
-    db_file = hist_file = None
-    if use_store and store_exists and store_stats:
+    if store_exists:
+        stats = store_stats or {}
         st.caption(
-            f"{store_stats.get('db_tels', 0):,} TEL · "
-            f"{store_stats.get('hist_rows', 0):,} lignes histo · "
-            f"MAJ {str(store_stats.get('last_update', '—'))[:10]}"
+            f"Base persistante · {stats.get('db_tels', 0):,} TEL · "
+            f"{stats.get('hist_rows', 0):,} lignes histo · "
+            f"MAJ {str(stats.get('last_update', '—'))[:10]}"
         )
-    elif not store_exists:
+    else:
         db_rows = (store_stats or {}).get("db_rows", 0)
         hist_rows = (store_stats or {}).get("hist_rows", 0)
         st.warning(
             f"Base persistante vide (client **{db_rows:,}**, histo **{hist_rows:,}**). "
             "Relancez la migration PostgreSQL ou importez via **Base de données**."
         )
-    elif not use_store:
-        db_file = st.file_uploader(
-            "Base client (DB)",
-            type=["xls", "xlsx", "xlsm"],
-            key=f"{key_prefix}_db",
-        )
-        hist_file = st.file_uploader(
-            "Historique",
-            type=["xls", "xlsx", "xlsm", "csv"],
-            key=f"{key_prefix}_hist",
-        )
-    return {"use_store": use_store and store_exists, "db_file": db_file, "hist_file": hist_file}
+    return {"use_store": store_exists, "db_file": None, "hist_file": None}
 
 
 def render_section_header(title: str, subtitle: str, *, badge: str | None = None) -> None:
