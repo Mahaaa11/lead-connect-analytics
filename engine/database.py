@@ -165,22 +165,18 @@ def get_store_stats() -> dict[str, Any]:
     }
     if initialized:
         stats["db_tels"] = storage.count_client_tels()
-        hist = load_history()
-        stats["hist_tels"] = int(_prepare_hist_frame(hist)["TEL"].nunique())
-        onoff = load_onoff_calls()
-        stats["onoff_tels"] = int(onoff["TEL"].nunique()) if not onoff.empty else 0
+        stats["hist_tels"] = storage.count_history_tels()
+        stats["onoff_tels"] = storage.count_onoff_tels()
     return stats
 
 
 def _database_url_hint() -> str:
-    import os
-
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
-        return f"SQLite local ({storage.STORE_DIR / 'recyclage.db'})"
-    if url.startswith("postgresql"):
+        return "PostgreSQL (DATABASE_URL non configurée)"
+    if url.startswith("postgresql") or url.startswith("postgres://"):
         return "PostgreSQL (DATABASE_URL)"
-    return "Base SQL configurée (DATABASE_URL)"
+    return "Base configurée (DATABASE_URL)"
 
 
 def _save_merged_onoff(
@@ -887,7 +883,21 @@ def load_cohort_tracking_history() -> list[dict[str, Any]]:
 
 def ensure_app_user() -> None:
     _ensure_storage()
+    _maybe_reset_password_from_secrets()
     storage.ensure_default_user()
+
+
+def _maybe_reset_password_from_secrets() -> None:
+    """One-shot recovery: set APP_RESET_PASSWORD_ON_START=true in Streamlit secrets."""
+    import os
+
+    flag = os.environ.get("APP_RESET_PASSWORD_ON_START", "").strip().lower()
+    if flag not in ("1", "true", "yes"):
+        return
+    from engine.auth import default_credentials
+
+    username, password = default_credentials()
+    storage.force_set_app_password(username, password)
 
 
 def authenticate(username: str, password: str) -> bool:
@@ -898,3 +908,13 @@ def authenticate(username: str, password: str) -> bool:
 def change_app_password(username: str, current_password: str, new_password: str) -> tuple[bool, str]:
     _ensure_storage()
     return storage.update_app_password(username, current_password, new_password)
+
+
+def force_set_app_password(username: str, new_password: str) -> None:
+    _ensure_storage()
+    storage.force_set_app_password(username, new_password)
+
+
+def list_app_users() -> list[str]:
+    _ensure_storage()
+    return storage.list_app_users()

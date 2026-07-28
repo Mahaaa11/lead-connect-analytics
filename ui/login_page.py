@@ -27,13 +27,19 @@ def init_auth_session() -> None:
         st.session_state.authenticated = False
     if "auth_username" not in st.session_state:
         st.session_state.auth_username = ""
+    if "auth_db_error" not in st.session_state:
+        st.session_state.auth_db_error = ""
     db = _database_module()
     if not hasattr(db, "ensure_app_user"):
         raise RuntimeError(
             "Module database obsolète. Arrêtez Streamlit (Ctrl+C) puis relancez : "
             "streamlit run ui/streamlit_app.py"
         )
-    db.ensure_app_user()
+    try:
+        db.ensure_app_user()
+        st.session_state.auth_db_error = ""
+    except Exception as exc:
+        st.session_state.auth_db_error = str(exc)
 
 
 def render_login_page() -> None:
@@ -67,6 +73,14 @@ def render_login_page() -> None:
         )
 
     with col_form:
+        db_error = st.session_state.get("auth_db_error") or ""
+        if db_error:
+            st.error(
+                f"Impossible de joindre la base de données : {db_error}\n\n"
+                "Vérifiez **DATABASE_URL** dans les secrets Streamlit "
+                "(format `postgresql://...?sslmode=require`)."
+            )
+
         st.markdown(
             """
             <div class="lc-col-form-marker"></div>
@@ -89,15 +103,29 @@ def render_login_page() -> None:
 
         if submitted:
             user = username.strip()
+            if st.session_state.get("auth_db_error"):
+                st.error("Connexion base indisponible — corrigez DATABASE_URL avant de vous connecter.")
+                return
             db = _database_module()
             if not user or not password:
                 st.error("Identifiant et mot de passe sont obligatoires.")
-            elif db.authenticate(user, password):
-                st.session_state.authenticated = True
-                st.session_state.auth_username = user
-                st.rerun()
             else:
-                st.error("Identifiant ou mot de passe incorrect.")
+                try:
+                    ok = db.authenticate(user, password)
+                except Exception as exc:
+                    st.error(f"Erreur base de données : {exc}")
+                    return
+                if ok:
+                    st.session_state.authenticated = True
+                    st.session_state.auth_username = user
+                    st.rerun()
+                else:
+                    st.error(
+                        "Identifiant ou mot de passe incorrect. "
+                        "Sur PostgreSQL, le mot de passe migré peut différer de `leadconnect` — "
+                        "ajoutez `APP_RESET_PASSWORD_ON_START = \"true\"` dans les secrets Streamlit "
+                        "puis redémarrez l'app."
+                    )
 
 
 def render_logout_button() -> None:

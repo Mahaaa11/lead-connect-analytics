@@ -1,4 +1,4 @@
-"""SQL-backed persistent storage (PostgreSQL or SQLite)."""
+"""SQL-backed persistent storage (PostgreSQL)."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 STORE_DIR = Path(__file__).resolve().parents[1] / "data" / "store"
-DEFAULT_SQLITE_URL = f"sqlite:///{STORE_DIR / 'recyclage.db'}"
+
+from engine.config_env import bootstrap_env, require_database_url
+
+bootstrap_env()
 
 
 def _database_url() -> str:
-    url = os.environ.get("DATABASE_URL", DEFAULT_SQLITE_URL).strip()
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    return url
+    return require_database_url()
 
 
 def get_engine() -> Engine:
@@ -30,10 +30,7 @@ def get_engine() -> Engine:
 
 
 def backend_label() -> str:
-    url = _database_url()
-    if url.startswith("postgresql"):
-        return "PostgreSQL"
-    return "SQLite"
+    return "PostgreSQL"
 
 
 def init_schema(engine: Engine | None = None) -> None:
@@ -352,6 +349,22 @@ def count_history_rows(engine: Engine | None = None) -> int:
     engine = engine or get_engine()
     with engine.begin() as conn:
         return int(conn.execute(text("SELECT COUNT(*) FROM history_rows")).scalar_one())
+
+
+def count_history_tels(engine: Engine | None = None) -> int:
+    engine = engine or get_engine()
+    with engine.begin() as conn:
+        return int(
+            conn.execute(text("SELECT COUNT(DISTINCT tel) FROM history_rows")).scalar_one()
+        )
+
+
+def count_onoff_tels(engine: Engine | None = None) -> int:
+    engine = engine or get_engine()
+    with engine.begin() as conn:
+        return int(
+            conn.execute(text("SELECT COUNT(DISTINCT tel) FROM onoff_calls")).scalar_one()
+        )
 
 
 def replace_onoff_calls(df: pd.DataFrame, engine: Engine | None = None) -> None:
@@ -805,3 +818,56 @@ def update_app_password(
             },
         )
     return True, "Mot de passe mis à jour."
+
+
+def force_set_app_password(
+    username: str,
+    new_password: str,
+    engine: Engine | None = None,
+) -> None:
+    """Set password without current password (deploy recovery). Creates user if missing."""
+    from engine.auth import hash_password
+
+    user = username.strip()
+    if len(new_password) < 6:
+        raise ValueError("Le mot de passe doit contenir au moins 6 caractères.")
+
+    engine = engine or get_engine()
+    init_schema(engine)
+    now = datetime.now().isoformat(timespec="seconds")
+    password_hash = hash_password(new_password)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT username FROM app_users WHERE username = :username"),
+            {"username": user},
+        ).fetchone()
+        if row:
+            conn.execute(
+                text(
+                    """
+                    UPDATE app_users
+                    SET password_hash = :password_hash, updated_at = :updated_at
+                    WHERE username = :username
+                    """
+                ),
+                {"username": user, "password_hash": password_hash, "updated_at": now},
+            )
+        else:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO app_users (username, password_hash, updated_at)
+                    VALUES (:username, :password_hash, :updated_at)
+                    """
+                ),
+                {"username": user, "password_hash": password_hash, "updated_at": now},
+            )
+
+
+def list_app_users(engine: Engine | None = None) -> list[str]:
+    engine = engine or get_engine()
+    init_schema(engine)
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT username FROM app_users ORDER BY username")).fetchall()
+    return [str(row[0]) for row in rows]

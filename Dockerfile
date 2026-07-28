@@ -11,8 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Définir DATABASE_URL au runtime pour PostgreSQL (Supabase, Neon, Railway…)
-# Sans variable : SQLite persistant dans /app/data/store/recyclage.db
+# Définir DATABASE_URL au runtime (Neon, Supabase, etc.)
+# Exemple : docker run -e DATABASE_URL=postgresql://... ...
 VOLUME ["/app/data/store"]
 
 EXPOSE 8501

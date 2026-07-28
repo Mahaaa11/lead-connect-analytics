@@ -1472,7 +1472,7 @@ def _render_merge_persistence_report(
 
     st.success(
         f"**Enregistré sur la base persistante** — {db_path}\n\n"
-        "Les fusions du jour sont sauvegardées dans SQLite. "
+        "Les fusions du jour sont sauvegardées dans PostgreSQL. "
         "Demain, uploadez uniquement les nouveaux fichiers du jour."
     )
 
@@ -1851,8 +1851,8 @@ with st.sidebar:
     st.caption(f"Version {APP_VERSION}")
     app_mode = render_navigation(default="overview")
 
-    store_ready = database.store_exists()
-    store_stats = database.get_store_stats() if store_ready else {}
+    store_stats = database.get_store_stats()
+    store_ready = bool(store_stats.get("initialized"))
 
     analytics_modes = {"overview", "data_client", "ventes", "dashboard"}
     if app_mode in analytics_modes:
@@ -2773,7 +2773,7 @@ else:
         "dashboard": ("Performance", "Conversion, parcours statuts, obsolètes, ventes"),
         "forecast": ("Prévisionnel", "Projection J+1 à J+7, quotas et export"),
         "export": ("Export recyclage", "Sélection par statut, couleur et quotas"),
-        "database": ("Base de données", "Fusion quotidienne et persistance SQLite"),
+        "database": ("Base de données", "Fusion quotidienne et persistance PostgreSQL"),
     }
     if app_mode in section_titles:
         title, subtitle = section_titles[app_mode]

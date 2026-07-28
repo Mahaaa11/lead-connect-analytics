@@ -88,6 +88,13 @@ def render_global_data_source(
             f"{store_stats.get('hist_rows', 0):,} lignes histo · "
             f"MAJ {str(store_stats.get('last_update', '—'))[:10]}"
         )
+    elif not store_exists:
+        db_rows = (store_stats or {}).get("db_rows", 0)
+        hist_rows = (store_stats or {}).get("hist_rows", 0)
+        st.warning(
+            f"Base persistante vide (client **{db_rows:,}**, histo **{hist_rows:,}**). "
+            "Relancez la migration PostgreSQL ou importez via **Base de données**."
+        )
     elif not use_store:
         db_file = st.file_uploader(
             "Base client (DB)",
@@ -232,7 +239,7 @@ def _overview_html(metrics: dict[str, Any], *, overview_css: str | None = None) 
     <div class="mod"><div class="mod-num">02</div><h3>Performance</h3><p>Conversion vente, parcours statuts, obsolètes, doublons, relances, suivi ventes.</p></div>
     <div class="mod"><div class="mod-num">03</div><h3>Prévisionnel</h3><p>Projection J+1 à J+7, quotas, exclusion Book1, export coloré.</p></div>
     <div class="mod"><div class="mod-num">04</div><h3>Export recyclage</h3><p>Sélection par statut/couleur, quotas, durées Onoff, masque Excel.</p></div>
-    <div class="mod"><div class="mod-num">05</div><h3>Base de données</h3><p>Fusion quotidienne, persistance SQLite, filtres FICHIER, export complet.</p></div>
+    <div class="mod"><div class="mod-num">05</div><h3>Base de données</h3><p>Fusion quotidienne, persistance PostgreSQL, filtres FICHIER, export complet.</p></div>
     <div class="mod"><div class="mod-num">06</div><h3>Ventes</h3><p>Suivi quotidien statut d'origine, baseline snapshot, analyse export_data_client.</p></div>
   </div>
 </div>
