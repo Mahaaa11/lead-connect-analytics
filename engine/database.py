@@ -906,10 +906,13 @@ def _maybe_reset_password_from_secrets() -> None:
     flag = os.environ.get("APP_RESET_PASSWORD_ON_START", "").strip().lower()
     if flag not in ("1", "true", "yes"):
         return
+    if getattr(_maybe_reset_password_from_secrets, "_done", False):
+        return
     from engine.auth import default_credentials
 
     username, password = default_credentials()
     storage.force_set_app_password(username, password)
+    _maybe_reset_password_from_secrets._done = True  # type: ignore[attr-defined]
 
 
 def authenticate(username: str, password: str) -> bool:

@@ -18,15 +18,26 @@ from engine.config_env import bootstrap_env, require_database_url
 
 bootstrap_env()
 
+_engine: Engine | None = None
+_schema_initialized = False
+
 
 def _database_url() -> str:
     return require_database_url()
 
 
 def get_engine() -> Engine:
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(_database_url(), pool_pre_ping=True)
-    return engine
+    global _engine
+    if _engine is None:
+        STORE_DIR.mkdir(parents=True, exist_ok=True)
+        _engine = create_engine(
+            _database_url(),
+            pool_pre_ping=True,
+            pool_size=3,
+            max_overflow=5,
+            connect_args={"connect_timeout": 15},
+        )
+    return _engine
 
 
 def backend_label() -> str:
@@ -34,6 +45,9 @@ def backend_label() -> str:
 
 
 def init_schema(engine: Engine | None = None) -> None:
+    global _schema_initialized
+    if _schema_initialized:
+        return
     engine = engine or get_engine()
     ddl = """
     CREATE TABLE IF NOT EXISTS client_db (
@@ -107,6 +121,7 @@ def init_schema(engine: Engine | None = None) -> None:
             stmt = statement.strip()
             if stmt:
                 conn.execute(text(stmt))
+    _schema_initialized = True
 
 
 def _row_hash(parts: list[str]) -> str:

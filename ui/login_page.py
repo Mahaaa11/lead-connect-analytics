@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-import importlib
-
 import streamlit as st
 
 
 def _database_module():
-    """Reload database module so Streamlit hot-reload picks up new functions."""
     from engine import database
 
-    importlib.reload(database)
     return database
 
 
 def _brand_logo_module():
     from ui import brand_logo
 
-    importlib.reload(brand_logo)
     return brand_logo
 
 
@@ -29,6 +24,8 @@ def init_auth_session() -> None:
         st.session_state.auth_username = ""
     if "auth_db_error" not in st.session_state:
         st.session_state.auth_db_error = ""
+    if st.session_state.get("_auth_bootstrapped"):
+        return
     db = _database_module()
     if not hasattr(db, "ensure_app_user"):
         raise RuntimeError(
@@ -38,15 +35,14 @@ def init_auth_session() -> None:
     try:
         db.ensure_app_user()
         st.session_state.auth_db_error = ""
+        st.session_state._auth_bootstrapped = True
     except Exception as exc:
         st.session_state.auth_db_error = str(exc)
 
 
 def render_login_page() -> None:
-    import importlib
     from ui import brand_theme
 
-    importlib.reload(brand_theme)
     brand_logo = _brand_logo_module()
 
     st.markdown(brand_theme.LOGIN_PAGE_CSS, unsafe_allow_html=True)
@@ -111,7 +107,8 @@ def render_login_page() -> None:
                 st.error("Identifiant et mot de passe sont obligatoires.")
             else:
                 try:
-                    ok = db.authenticate(user, password)
+                    with st.spinner("Connexion à PostgreSQL… (Neon peut prendre 10–20 s au 1er accès)"):
+                        ok = db.authenticate(user, password)
                 except Exception as exc:
                     st.error(f"Erreur base de données : {exc}")
                     return
@@ -122,8 +119,7 @@ def render_login_page() -> None:
                 else:
                     st.error(
                         "Identifiant ou mot de passe incorrect. "
-                        "Sur PostgreSQL, le mot de passe migré peut différer de `leadconnect` — "
-                        "ajoutez `APP_RESET_PASSWORD_ON_START = \"true\"` dans les secrets Streamlit "
+                        "Ajoutez `APP_RESET_PASSWORD_ON_START = \"true\"` dans les secrets Streamlit "
                         "puis redémarrez l'app."
                     )
 
@@ -134,6 +130,7 @@ def render_logout_button() -> None:
     if st.button("Déconnexion", use_container_width=True, key="logout_btn"):
         st.session_state.authenticated = False
         st.session_state.auth_username = ""
+        st.session_state.pop("_auth_bootstrapped", None)
         st.rerun()
     st.divider()
 

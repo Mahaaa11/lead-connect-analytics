@@ -20,7 +20,12 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-28b"
+APP_VERSION = "2026-07-28c"
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _cached_store_stats() -> dict[str, Any]:
+    return database.get_store_stats()
 
 import engine.database as database
 importlib.reload(database)
@@ -1856,7 +1861,7 @@ with st.sidebar:
     st.caption(f"Version {APP_VERSION}")
     app_mode = render_navigation(default="overview")
 
-    store_stats = database.get_store_stats()
+    store_stats = _cached_store_stats()
     store_ready = bool(store_stats.get("initialized"))
     if store_stats.get("error"):
         st.error(f"Base PostgreSQL : {store_stats['error']}")
