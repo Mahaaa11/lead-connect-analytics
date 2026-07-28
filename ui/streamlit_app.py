@@ -12,15 +12,15 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from engine.config_env import bootstrap_env
-
-bootstrap_env()
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-APP_VERSION = "2026-07-28a"
+from engine.config_env import bootstrap_env
+
+bootstrap_env()
+
+APP_VERSION = "2026-07-28b"
 
 import engine.database as database
 importlib.reload(database)
