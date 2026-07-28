@@ -1,4 +1,4 @@
-"""SQL-backed persistent storage (PostgreSQL)."""
+"""SQL-backed persistent storage (PostgreSQL cloud, SQLite local)."""
 
 from __future__ import annotations
 
@@ -14,34 +14,40 @@ from sqlalchemy.engine import Engine
 
 STORE_DIR = Path(__file__).resolve().parents[1] / "data" / "store"
 
-from engine.config_env import bootstrap_env, require_database_url
+from engine.config_env import bootstrap_env, is_postgresql_backend, resolve_database_url
 
 bootstrap_env()
 
 _engine: Engine | None = None
 _schema_initialized = False
+_engine_url: str | None = None
 
 
 def _database_url() -> str:
-    return require_database_url()
+    return resolve_database_url()
 
 
 def get_engine() -> Engine:
-    global _engine
-    if _engine is None:
+    global _engine, _engine_url
+    url = _database_url()
+    if _engine is None or _engine_url != url:
         STORE_DIR.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(
-            _database_url(),
-            pool_pre_ping=True,
-            pool_size=3,
-            max_overflow=5,
-            connect_args={"connect_timeout": 15},
-        )
+        if is_postgresql_backend():
+            _engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=3,
+                max_overflow=5,
+                connect_args={"connect_timeout": 15},
+            )
+        else:
+            _engine = create_engine(url, pool_pre_ping=True)
+        _engine_url = url
     return _engine
 
 
 def backend_label() -> str:
-    return "PostgreSQL"
+    return "PostgreSQL" if is_postgresql_backend() else "SQLite"
 
 
 def init_schema(engine: Engine | None = None) -> None:

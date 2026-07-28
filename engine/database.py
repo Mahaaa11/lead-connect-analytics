@@ -170,7 +170,7 @@ def get_store_stats() -> dict[str, Any]:
     except Exception as exc:
         return {
             "initialized": False,
-            "backend": "PostgreSQL",
+            "backend": storage.backend_label(),
             "database_url_hint": _database_url_hint(),
             "last_update": None,
             "db_rows": 0,
@@ -185,7 +185,7 @@ def get_store_stats() -> dict[str, Any]:
 def _database_url_hint() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
-        return "PostgreSQL (DATABASE_URL non configurée)"
+        return f"SQLite local ({storage.STORE_DIR / 'recyclage.db'})"
     if url.startswith("postgresql") or url.startswith("postgres://"):
         return "PostgreSQL (DATABASE_URL)"
     return "Base configurée (DATABASE_URL)"

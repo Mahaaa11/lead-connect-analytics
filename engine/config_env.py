@@ -13,6 +13,7 @@ _ENV_KEYS = (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SQLITE_PATH = ROOT / "data" / "store" / "recyclage.db"
 
 
 def bootstrap_env() -> None:
@@ -75,21 +76,39 @@ def _load_streamlit_secrets() -> None:
         return
 
 
+def resolve_database_url() -> str:
+    """PostgreSQL when DATABASE_URL is set (cloud), else SQLite local file."""
+    bootstrap_env()
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{DEFAULT_SQLITE_PATH}"
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql"):
+        return url
+    if url.startswith("sqlite:"):
+        return url
+    raise RuntimeError(
+        "DATABASE_URL non reconnu. Utilisez postgresql://... ou laissez vide pour SQLite local."
+    )
+
+
+def is_postgresql_backend() -> bool:
+    return resolve_database_url().startswith("postgresql")
+
+
 def require_database_url() -> str:
-    """Return a normalized PostgreSQL DATABASE_URL or raise with setup instructions."""
+    """Return PostgreSQL URL only — for migration scripts."""
     bootstrap_env()
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
         raise RuntimeError(
-            "DATABASE_URL manquant. L'application utilise PostgreSQL uniquement.\n"
-            "• Streamlit Cloud : Settings → Secrets → DATABASE_URL\n"
-            "• Local : copiez .env.example vers .env et renseignez votre URL Neon."
+            "DATABASE_URL manquant. Requis pour la migration vers PostgreSQL.\n"
+            "export DATABASE_URL=\"postgresql://...?sslmode=require\""
         )
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
     if not url.startswith("postgresql"):
-        raise RuntimeError(
-            "DATABASE_URL doit être une URL PostgreSQL (postgresql://...). "
-            "SQLite n'est plus utilisé par l'application."
-        )
+        raise RuntimeError("DATABASE_URL doit être une URL PostgreSQL (postgresql://...).")
     return url

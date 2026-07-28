@@ -107,7 +107,12 @@ def render_login_page() -> None:
                 st.error("Identifiant et mot de passe sont obligatoires.")
             else:
                 try:
-                    with st.spinner("Connexion à PostgreSQL… (Neon peut prendre 10–20 s au 1er accès)"):
+                    spinner = (
+                        "Connexion à PostgreSQL… (Neon peut prendre 10–20 s au 1er accès)"
+                        if db._database_url_hint().startswith("PostgreSQL")
+                        else "Connexion…"
+                    )
+                    with st.spinner(spinner):
                         ok = db.authenticate(user, password)
                 except Exception as exc:
                     st.error(f"Erreur base de données : {exc}")
