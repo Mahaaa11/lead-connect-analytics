@@ -1,4 +1,4 @@
-"""Agent-level statistics from call history (STATUS_USER + DUREE + STATUS)."""
+"""Agent-level statistics from call history (TV + DUREE + STATUS)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from engine.processor import (
 )
 
 AGENT_ALIASES = (
+    "TV",
     "STATUS_USER",
     "AGENT",
     "USER",
@@ -42,7 +43,7 @@ def prepare_agent_history_frame(df_hist: pd.DataFrame) -> pd.DataFrame:
     agent_col = _find_column(out, AGENT_ALIASES)
     if not agent_col:
         raise ValueError(
-            "Colonne agent introuvable dans l'historique (attendu : STATUS_USER)."
+            "Colonne agent introuvable dans l'historique (attendu : TV)."
         )
 
     out = out.rename(columns={agent_col: "Agent"})

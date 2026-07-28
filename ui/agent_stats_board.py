@@ -15,7 +15,7 @@ def render_agent_statistics(metrics: dict[str, Any]) -> None:
     st.caption(
         f"Période : **{metrics.get('period_label', '—')}** · "
         f"Seuil alerte Refus / Pas de collab : **<{metrics.get('short_call_threshold_sec', 4)} s** · "
-        f"Agent = colonne **STATUS_USER** de l'historique."
+        f"Agent = colonne **TV** de l'historique."
     )
 
     if metrics.get("agent_count", 0) == 0:
