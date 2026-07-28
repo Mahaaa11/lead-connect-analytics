@@ -146,11 +146,25 @@ def _count_onoff_totals() -> int:
     return 0
 
 
+def _get_store_counts() -> dict[str, int]:
+    """Single-query counts, with fallback for stale cached storage modules."""
+    if hasattr(storage, "get_store_counts"):
+        return storage.get_store_counts()
+    return {
+        "db_rows": storage.count_client_rows(),
+        "hist_rows": storage.count_history_rows(),
+        "hist_tels": storage.count_history_tels(),
+        "onoff_rows": storage.count_onoff_rows(),
+        "onoff_tels": storage.count_onoff_tels(),
+        "onoff_totals_rows": _count_onoff_totals(),
+    }
+
+
 def get_store_stats() -> dict[str, Any]:
     try:
         _ensure_storage()
         meta = _load_meta()
-        counts = storage.get_store_counts()
+        counts = _get_store_counts()
         initialized = counts["db_rows"] > 0 and counts["hist_rows"] > 0
         stats: dict[str, Any] = {
             "initialized": initialized,
@@ -323,7 +337,10 @@ def update_db_from_daily_files(
         raise ValueError("Aucun fichier data du jour.")
 
     if master_tels is None:
-        master_tels = storage.list_client_tels()
+        if hasattr(storage, "list_client_tels"):
+            master_tels = storage.list_client_tels()
+        else:
+            master_tels = set(load_db()["TEL"].dropna().astype(str))
     master_tels_before = len(master_tels)
 
     daily_frames: list[pd.DataFrame] = []
@@ -378,7 +395,7 @@ def append_history_from_daily_files(
 
     return {
         "rows_added": rows_added,
-        "total_hist_rows": storage.get_store_counts()["hist_rows"],
+        "total_hist_rows": _get_store_counts()["hist_rows"],
         "files_processed": len(daily_sources),
     }
 
