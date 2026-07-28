@@ -36,8 +36,9 @@ def get_engine() -> Engine:
             _engine = create_engine(
                 url,
                 pool_pre_ping=True,
-                pool_size=3,
-                max_overflow=5,
+                pool_size=2,
+                max_overflow=3,
+                pool_recycle=300,
                 connect_args={"connect_timeout": 15},
             )
         else:
@@ -155,12 +156,38 @@ def _json_rows_to_df(rows: list[dict[str, str]]) -> pd.DataFrame:
 
 
 def store_has_data(engine: Engine | None = None) -> bool:
+    counts = get_store_counts(engine)
+    return counts["db_rows"] > 0 and counts["hist_rows"] > 0
+
+
+def get_store_counts(engine: Engine | None = None) -> dict[str, int]:
+    """Single round-trip counts for store metrics (Neon-friendly)."""
     engine = engine or get_engine()
     init_schema(engine)
     with engine.begin() as conn:
-        client_count = conn.execute(text("SELECT COUNT(*) FROM client_db")).scalar_one()
-        hist_count = conn.execute(text("SELECT COUNT(*) FROM history_rows")).scalar_one()
-    return client_count > 0 and hist_count > 0
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM client_db) AS db_rows,
+                    (SELECT COUNT(*) FROM history_rows) AS hist_rows,
+                    (SELECT COUNT(DISTINCT tel) FROM history_rows) AS hist_tels,
+                    (SELECT COUNT(*) FROM onoff_calls) AS onoff_rows,
+                    (SELECT COUNT(DISTINCT tel) FROM onoff_calls) AS onoff_tels,
+                    (SELECT COUNT(*) FROM onoff_totals) AS onoff_totals_rows
+                """
+            )
+        ).mappings().one()
+    return {key: int(row[key] or 0) for key in row.keys()}
+
+
+def list_client_tels(engine: Engine | None = None) -> set[str]:
+    """Return known TEL keys without deserializing client JSON payloads."""
+    engine = engine or get_engine()
+    init_schema(engine)
+    with engine.begin() as conn:
+        result = conn.execute(text("SELECT tel FROM client_db"))
+        return {str(row[0]).strip() for row in result.fetchall() if row[0]}
 
 
 def load_meta(engine: Engine | None = None) -> dict[str, Any]:
@@ -234,6 +261,28 @@ def _client_db_insert_sql(dialect: str, *, replace_all: bool) -> str:
     )
 
 
+def _rows_from_df(df: pd.DataFrame, *, now: str) -> list[dict[str, str]]:
+    df = _dedupe_client_rows(df)
+    by_tel: dict[str, dict[str, str]] = {}
+    for _, row in df.iterrows():
+        tel = str(row["TEL"]).strip()
+        by_tel[tel] = {"tel": tel, "data": _df_row_to_json(row), "updated_at": now}
+    return list(by_tel.values())
+
+
+def _execute_client_rows(
+    conn,
+    rows: list[dict[str, str]],
+    *,
+    dialect: str,
+    replace_all: bool,
+    chunk_size: int = 500,
+) -> None:
+    if not rows:
+        return
+    sql = text(_client_db_insert_sql(dialect, replace_all=replace_all))
+    for start in range(0, len(rows), chunk_size):
+        conn.execute(sql, rows[start : start + chunk_size])
 def replace_client_db(df: pd.DataFrame, engine: Engine | None = None) -> None:
     engine = engine or get_engine()
     init_schema(engine)
@@ -242,17 +291,11 @@ def replace_client_db(df: pd.DataFrame, engine: Engine | None = None) -> None:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM client_db"))
         return
-    df = _dedupe_client_rows(df)
-    by_tel: dict[str, dict[str, str]] = {}
-    for _, row in df.iterrows():
-        tel = str(row["TEL"]).strip()
-        by_tel[tel] = {"tel": tel, "data": _df_row_to_json(row), "updated_at": now}
-    rows = list(by_tel.values())
+    rows = _rows_from_df(df, now=now)
     dialect = engine.dialect.name
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM client_db"))
-        if rows:
-            conn.execute(text(_client_db_insert_sql(dialect, replace_all=True)), rows)
+        _execute_client_rows(conn, rows, dialect=dialect, replace_all=True)
 
 
 def upsert_client_db(df: pd.DataFrame, engine: Engine | None = None) -> int:
@@ -261,17 +304,11 @@ def upsert_client_db(df: pd.DataFrame, engine: Engine | None = None) -> int:
     init_schema(engine)
     if df.empty:
         return 0
-    df = _dedupe_client_rows(df)
     now = datetime.now().isoformat(timespec="seconds")
-    by_tel: dict[str, dict[str, str]] = {}
-    for _, row in df.iterrows():
-        tel = str(row["TEL"]).strip()
-        by_tel[tel] = {"tel": tel, "data": _df_row_to_json(row), "updated_at": now}
-    rows = list(by_tel.values())
+    rows = _rows_from_df(df, now=now)
     dialect = engine.dialect.name
     with engine.begin() as conn:
-        if rows:
-            conn.execute(text(_client_db_insert_sql(dialect, replace_all=False)), rows)
+        _execute_client_rows(conn, rows, dialect=dialect, replace_all=False)
     return len(rows)
 
 
@@ -300,14 +337,12 @@ def append_history(df: pd.DataFrame, engine: Engine | None = None) -> int:
     init_schema(engine)
     if df.empty:
         return 0
-    before = count_history_rows(engine)
     now = datetime.now().isoformat(timespec="seconds")
     with engine.begin() as conn:
-        _insert_history_rows(conn, df, now)
-    return count_history_rows(engine) - before
+        return _insert_history_rows(conn, df, now)
 
 
-def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> None:
+def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> int:
     dedupe_cols = ["TEL"]
     for col in ("DATE", "HEURE", "STATUS", "DATETIME"):
         if col in df.columns:
@@ -331,7 +366,7 @@ def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> None:
         )
 
     if not rows:
-        return
+        return 0
 
     dialect = conn.dialect.name
     if dialect == "postgresql":
@@ -355,6 +390,7 @@ def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> None:
             ),
             rows,
         )
+    return len(rows)
 
 
 def load_history(engine: Engine | None = None) -> pd.DataFrame:

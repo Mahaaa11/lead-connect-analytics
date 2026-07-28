@@ -1165,21 +1165,25 @@ def export_excel(
     sort_priority: SortPriority = "oldest",
     color_fills: dict[str, str] | None = None,
     output_path: str | Path | None = None,
+    prefiltered: pd.DataFrame | None = None,
 ) -> bytes:
     """Filter by status/color and write a styled Excel workbook. Returns file bytes."""
-    if latest.empty:
+    if latest.empty and (prefiltered is None or prefiltered.empty):
         raise ValueError("Aucune donnée à exporter après traitement.")
 
     color_fills = color_fills or DEFAULT_COLOR_FILLS
-    _, filtered = prepare_export_data(
-        latest,
-        selected_statuses=selected_statuses,
-        selected_colors=selected_colors,
-        max_rows=max_rows,
-        limit_scope=limit_scope,
-        status_color_quotas=status_color_quotas,
-        sort_priority=sort_priority,
-    )
+    if prefiltered is not None:
+        filtered = prefiltered
+    else:
+        _, filtered = prepare_export_data(
+            latest,
+            selected_statuses=selected_statuses,
+            selected_colors=selected_colors,
+            max_rows=max_rows,
+            limit_scope=limit_scope,
+            status_color_quotas=status_color_quotas,
+            sort_priority=sort_priority,
+        )
 
     available_cols = _order_export_columns(filtered.columns.tolist())
     buffer = io.BytesIO()

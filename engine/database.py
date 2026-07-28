@@ -150,22 +150,23 @@ def get_store_stats() -> dict[str, Any]:
     try:
         _ensure_storage()
         meta = _load_meta()
-        initialized = store_exists()
+        counts = storage.get_store_counts()
+        initialized = counts["db_rows"] > 0 and counts["hist_rows"] > 0
         stats: dict[str, Any] = {
             "initialized": initialized,
             "backend": storage.backend_label(),
             "database_url_hint": _database_url_hint(),
             "last_update": meta.get("last_update"),
-            "db_rows": storage.count_client_rows(),
-            "hist_rows": storage.count_history_rows(),
-            "onoff_rows": storage.count_onoff_rows(),
-            "onoff_totals_rows": _count_onoff_totals(),
+            "db_rows": counts["db_rows"],
+            "hist_rows": counts["hist_rows"],
+            "onoff_rows": counts["onoff_rows"],
+            "onoff_totals_rows": counts["onoff_totals_rows"],
             "updates": meta.get("updates", []),
         }
         if initialized:
-            stats["db_tels"] = storage.count_client_tels()
-            stats["hist_tels"] = storage.count_history_tels()
-            stats["onoff_tels"] = storage.count_onoff_tels()
+            stats["db_tels"] = counts["db_rows"]
+            stats["hist_tels"] = counts["hist_tels"]
+            stats["onoff_tels"] = counts["onoff_tels"]
         return stats
     except Exception as exc:
         return {
@@ -315,34 +316,47 @@ def update_db_from_daily_files(
     daily_sources: list[str | Path | BinaryIO],
     *,
     allow_new_tels: bool = False,
+    master_tels: set[str] | None = None,
 ) -> dict[str, int]:
-    """Merge one or more daily DB exports into the master by TEL."""
+    """Merge one or more daily DB exports into the master by TEL (upsert, no full rewrite)."""
     if not daily_sources:
         raise ValueError("Aucun fichier data du jour.")
 
-    master = _prepare_db_frame(load_db())
-    master_tels_before = int(master["TEL"].nunique())
-    totals = {
-        "updated_tels": 0,
-        "added_tels": 0,
-        "skipped_new_tels": 0,
-        "daily_tels": 0,
-        "files_processed": 0,
-        "master_tels_before": master_tels_before,
-    }
+    if master_tels is None:
+        master_tels = storage.list_client_tels()
+    master_tels_before = len(master_tels)
 
+    daily_frames: list[pd.DataFrame] = []
     for source in daily_sources:
-        daily = _prepare_db_frame(_read_import(source, is_history=False))
-        master, stats = _merge_client_db(master, daily, allow_new_tels=allow_new_tels)
-        totals["updated_tels"] += stats["updated_tels"]
-        totals["added_tels"] += stats.get("added_tels", 0)
-        totals["skipped_new_tels"] += stats.get("skipped_new_tels", 0)
-        totals["daily_tels"] += stats.get("daily_tels", 0)
-        totals["files_processed"] += 1
+        daily_frames.append(_prepare_db_frame(_read_import(source, is_history=False)))
 
-    save_db(master)
-    totals["total_db_rows"] = len(master)
-    return totals
+    daily = pd.concat(daily_frames, ignore_index=True)
+    daily = daily.drop_duplicates(subset=["TEL"], keep="last")
+    daily_tels = set(daily["TEL"].dropna().astype(str))
+    common = master_tels.intersection(daily_tels)
+    unmatched = daily_tels - master_tels
+
+    if allow_new_tels:
+        to_upsert = daily
+        added = len(unmatched)
+        skipped = 0
+    else:
+        to_upsert = daily[daily["TEL"].astype(str).isin(common)].copy()
+        added = 0
+        skipped = len(unmatched)
+
+    upserted = storage.upsert_client_db(to_upsert) if not to_upsert.empty else 0
+
+    return {
+        "updated_tels": len(common),
+        "added_tels": added,
+        "skipped_new_tels": skipped,
+        "daily_tels": len(daily_tels),
+        "files_processed": len(daily_sources),
+        "master_tels_before": master_tels_before,
+        "upserted_rows": upserted,
+        "total_db_rows": master_tels_before + added,
+    }
 
 
 def append_history_from_daily(daily_source: str | Path | BinaryIO) -> dict[str, int]:
@@ -364,7 +378,7 @@ def append_history_from_daily_files(
 
     return {
         "rows_added": rows_added,
-        "total_hist_rows": storage.count_history_rows(),
+        "total_hist_rows": storage.get_store_counts()["hist_rows"],
         "files_processed": len(daily_sources),
     }
 
@@ -441,10 +455,19 @@ def apply_daily_update(
 
     report: dict[str, Any] = {}
     if daily_db_files:
-        report["vente_baseline_snapshot"] = capture_vente_baseline_from_store()
+        df_db = load_db()
+        df_hist = load_history()
+        from engine.vente_tracking import baseline_from_store_latest
+
+        baseline = baseline_from_store_latest(df_db, df_hist)
+        report["vente_baseline_snapshot"] = {
+            "baseline_rows": _replace_vente_baseline_storage(baseline),
+            "captured_at": datetime.now().isoformat(timespec="seconds"),
+        }
         report["db"] = update_db_from_daily_files(
             daily_db_files,
             allow_new_tels=allow_new_tels,
+            master_tels=set(df_db["TEL"].dropna().astype(str)),
         )
     if daily_hist_files:
         report["history"] = append_history_from_daily_files(daily_hist_files)
@@ -572,11 +595,14 @@ def attach_store_onoff(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     db_tels = set(df["TEL"].dropna().astype(str).unique())
     totals = _load_onoff_totals()
+    calls = load_onoff_calls()
+    if not calls.empty:
+        calls = calls.copy()
+        calls["TEL"] = _clean_tel_db(calls["TEL"])
+        calls = calls[calls["TEL"].isin(db_tels)]
+
     if totals.empty:
-        calls = load_onoff_calls()
         if not calls.empty:
-            calls["TEL"] = _clean_tel_db(calls["TEL"])
-            calls = calls[calls["TEL"].isin(db_tels)]
             totals = (
                 calls.groupby("TEL", as_index=False)["Duration_Seconds"]
                 .sum()
@@ -590,10 +616,6 @@ def attach_store_onoff(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         out = df.copy()
         out["Total_Duration_Seconds"] = 0
         out["Total_Duration"] = "00:00:00"
-        calls = load_onoff_calls()
-        if not calls.empty:
-            calls["TEL"] = _clean_tel_db(calls["TEL"])
-            calls = calls[calls["TEL"].isin(db_tels)]
         last_calls = last_onoff_call_durations(calls, db_tels=db_tels)
         if not last_calls.empty:
             out = out.merge(last_calls, on="TEL", how="left")
@@ -606,7 +628,7 @@ def attach_store_onoff(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         else:
             out["Duree_Dernier_Appel"] = out["Duree_Dernier_Appel"].fillna("00:00:00")
         return out, {
-            "onoff_calls_rows": storage.count_onoff_rows(),
+            "onoff_calls_rows": len(calls),
             "onoff_tels_in_file": int(last_calls["TEL"].nunique()) if not last_calls.empty else 0,
             "onoff_tels_matched": int((out["Total_Duration_Seconds"] > 0).sum()),
             "onoff_tels_without_duration": int((out["Total_Duration_Seconds"] == 0).sum()),
@@ -625,10 +647,6 @@ def attach_store_onoff(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     out["Total_Duration_Seconds"] = out["Total_Duration_Seconds"].fillna(0).astype(int)
     out["Total_Duration"] = out["Total_Duration"].fillna("00:00:00")
 
-    calls = load_onoff_calls()
-    if not calls.empty:
-        calls["TEL"] = _clean_tel_db(calls["TEL"])
-        calls = calls[calls["TEL"].isin(db_tels)]
     last_calls = last_onoff_call_durations(calls, db_tels=db_tels)
     if not last_calls.empty:
         out = out.merge(last_calls, on="TEL", how="left")
@@ -642,7 +660,7 @@ def attach_store_onoff(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         out["Duree_Dernier_Appel"] = out["Duree_Dernier_Appel"].fillna("00:00:00")
 
     stats = {
-        "onoff_calls_rows": storage.count_onoff_rows(),
+        "onoff_calls_rows": len(calls),
         "onoff_tels_in_file": int(totals["TEL"].nunique()),
         "onoff_tels_matched": int((out["Total_Duration_Seconds"] > 0).sum()),
         "onoff_tels_without_duration": int((out["Total_Duration_Seconds"] == 0).sum()),
@@ -670,13 +688,15 @@ def process_merged_store() -> tuple[pd.DataFrame, dict, dict]:
     """Build the full recyclage dataset from the persisted merged store."""
     from engine.processor import attach_repondeur_profiles, process_data
 
+    df_db = load_db()
+    df_hist = load_history()
     latest, pipeline_stats = process_data(
-        df_db=load_db(),
-        df_hist=load_history(),
+        df_db=df_db,
+        df_hist=df_hist,
         return_stats=True,
     )
     latest, onoff_stats = attach_store_onoff(latest)
-    latest = attach_repondeur_profiles(latest, load_history())
+    latest = attach_repondeur_profiles(latest, df_hist)
     return latest, pipeline_stats, onoff_stats
 
 
@@ -739,11 +759,15 @@ def export_full_recyclage(
     *,
     fichier_filter: list[str] | None = None,
     fichier_filter_mode: str = "include",
+    precomputed: tuple[pd.DataFrame, dict, dict] | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """Build the complete colored recyclage workbook from the merged store."""
     from engine.processor import ALL_COLORS, DEFAULT_STATUS_MAPPING, export_excel, prepare_export_data
 
-    latest, pipeline_stats, onoff_stats = process_merged_store()
+    if precomputed is not None:
+        latest, pipeline_stats, onoff_stats = precomputed
+    else:
+        latest, pipeline_stats, onoff_stats = process_merged_store()
     if latest.empty:
         raise ValueError("Aucune donnée après fusion. Vérifiez les fichiers master.")
 
@@ -769,6 +793,7 @@ def export_full_recyclage(
         latest,
         selected_statuses=all_statuses,
         selected_colors=ALL_COLORS,
+        prefiltered=filtered,
     )
     summary = {
         "total_processed": len(latest),

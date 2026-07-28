@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import importlib
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,21 +21,38 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-28h"
+APP_VERSION = "2026-07-28i"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
 def _cached_store_stats() -> dict[str, Any]:
     return database.get_store_stats()
 
+
+def _invalidate_store_caches() -> None:
+    _cached_store_stats.clear()
+    for key in (
+        "data_client_metrics_key",
+        "performance_metrics_key",
+        "overview_metrics_key",
+        "ventes_metrics_key",
+    ):
+        st.session_state.pop(key, None)
+        st.session_state.pop(key.replace("_key", ""), None)
+
+
+_ON_STREAMLIT_CLOUD = os.environ.get("STREAMLIT_SERVER_HEADLESS", "").lower() == "true"
+
 import engine.database as database
-importlib.reload(database)
+if not _ON_STREAMLIT_CLOUD:
+    importlib.reload(database)
 import ui.brand_logo as brand_logo
 import ui.app_shell as app_shell
 import ui.login_page as login_page
-importlib.reload(brand_logo)
-importlib.reload(app_shell)
-importlib.reload(login_page)
+if not _ON_STREAMLIT_CLOUD:
+    importlib.reload(brand_logo)
+    importlib.reload(app_shell)
+    importlib.reload(login_page)
 import engine.dashboard as dashboard
 import engine.data_client_dashboard as data_client_dashboard
 import engine.forecast as forecast
@@ -133,7 +151,7 @@ def _render_colored_bucket_bar_chart(by_color: dict[str, int]) -> None:
 def _store_cache_token() -> str:
     if not database.store_exists():
         return "no-store"
-    stats = database.get_store_stats()
+    stats = _cached_store_stats()
     return "|".join(
         str(stats.get(k, ""))
         for k in ("last_update", "hist_rows", "db_tels", "onoff_rows")
@@ -1421,7 +1439,7 @@ def _render_diagnostics(stats: dict) -> None:
 
 
 def _render_store_stats(*, before: dict[str, Any] | None = None) -> None:
-    stats = database.get_store_stats()
+    stats = _cached_store_stats()
     backend = stats.get("backend", "—")
     st.caption(f"Stockage : **{backend}** — {stats.get('database_url_hint', '')}")
     c1, c2, c3, c4 = st.columns(4)
@@ -2854,6 +2872,7 @@ else:
                         stats = database.initialize_store(
                             init_db, init_hist, init_onoff or None, label=init_label
                         )
+                        _invalidate_store_caches()
                         st.success(
                             f"Base master enregistrée : {stats['db_tels']:,} TEL · "
                             f"{stats['hist_rows']:,} lignes historique · "
@@ -2883,7 +2902,7 @@ else:
                     )
                 else:
                     try:
-                        before_stats = database.get_store_stats()
+                        before_stats = _cached_store_stats()
                         with st.spinner("Mise à jour du jour en cours…"):
                             report = database.apply_daily_update(
                                 daily_db=merge_daily_db,
@@ -2892,10 +2911,13 @@ else:
                                 allow_new_tels=allow_new_tels,
                                 label="fusion quotidienne",
                             )
+                        _invalidate_store_caches()
                         st.subheader("Fusion enregistrée")
                         _render_merge_persistence_report(report, before_stats)
 
-                        preview_rows = database.process_merged_store()[0]
+                        with st.spinner("Préparation export recyclage…"):
+                            precomputed = database.process_merged_store()
+                        preview_rows = precomputed[0]
                         st.info(
                             f"Données fusionnées : **{len(preview_rows):,}** lignes exportables."
                         )
@@ -2904,6 +2926,7 @@ else:
                             excel_bytes, summary = database.export_full_recyclage(
                                 fichier_filter=fichier_filter,
                                 fichier_filter_mode=fichier_filter_mode,
+                                precomputed=precomputed,
                             )
                         st.session_state["excel_bytes"] = excel_bytes
                         st.session_state["summary"] = summary
@@ -2959,11 +2982,15 @@ else:
                                 f"{o.get('onoff_totals_rows', 0):,} TEL (totaux)."
                             )
                         _render_store_stats()
+                        with st.spinner("Préparation export recyclage…"):
+                            precomputed = database.process_merged_store()
                         with st.spinner("Génération de l'export complet coloré…"):
                             excel_bytes, summary = database.export_full_recyclage(
                                 fichier_filter=fichier_filter,
                                 fichier_filter_mode=fichier_filter_mode,
+                                precomputed=precomputed,
                             )
+                        _invalidate_store_caches()
                         st.session_state["excel_bytes"] = excel_bytes
                         st.session_state["summary"] = summary
                         st.success(
@@ -2979,13 +3006,14 @@ else:
                     st.error("Importez au moins un fichier du jour.")
                 else:
                     try:
-                        before_stats = database.get_store_stats()
+                        before_stats = _cached_store_stats()
                         report = database.apply_daily_update(
                             daily_db=daily_db,
                             daily_hist=daily_hist,
                             daily_onoff=daily_onoff or None,
                             allow_new_tels=allow_new_tels,
                         )
+                        _invalidate_store_caches()
                         st.subheader("Fusion enregistrée")
                         _render_merge_persistence_report(report, before_stats)
                         preview_rows = database.process_merged_store()[0]
