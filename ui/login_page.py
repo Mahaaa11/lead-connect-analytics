@@ -73,9 +73,16 @@ def render_login_page() -> None:
         if db_error:
             st.error(
                 f"Impossible de joindre la base de données : {db_error}\n\n"
-                "Vérifiez **DATABASE_URL** dans les secrets Streamlit "
-                "(format `postgresql://...?sslmode=require`)."
+                "En local : relancez avec `./run.sh` (SQLite). "
+                "Vérifiez que `data/store/recyclage.db` existe."
             )
+        else:
+            try:
+                db = _database_module()
+                backend = db._database_url_hint()
+                st.caption(f"Base : **{backend}**")
+            except Exception:
+                pass
 
         st.markdown(
             """

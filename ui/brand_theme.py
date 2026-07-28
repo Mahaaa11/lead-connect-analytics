@@ -66,17 +66,28 @@ GLOBAL_CSS = f"""
 .stApp {{
     background: {CREAM} !important;
 }}
+/* ── Header: keep sidebar toggle, hide deploy toolbar ── */
 header[data-testid="stHeader"] {{
-    display: none !important;
-    height: 0 !important;
-    min-height: 0 !important;
-    visibility: hidden !important;
+    visibility: visible !important;
+    display: block !important;
+    height: auto !important;
+    min-height: 3.25rem !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
 }}
 [data-testid="stToolbar"] {{
     display: none !important;
 }}
 div[data-testid="stDecoration"] {{
     display: none !important;
+}}
+button[data-testid="collapsedControl"],
+button[data-testid="stSidebarCollapsedControl"] {{
+    visibility: visible !important;
+    display: flex !important;
+    color: {NAVY} !important;
+    z-index: 999999 !important;
 }}
 [data-testid="stAppViewContainer"] {{
     top: 0 !important;
@@ -99,10 +110,21 @@ section.main > div {{
     background: transparent !important;
 }}
 
-/* ── Sidebar ── */
+/* ── Sidebar — always visible & expanded ── */
 section[data-testid="stSidebar"] {{
+    display: block !important;
+    visibility: visible !important;
+    transform: translateX(0) !important;
+    min-width: 21rem !important;
+    width: 21rem !important;
     background: linear-gradient(165deg, {NAVY} 0%, {NAVY_DARK} 55%, #001020 100%) !important;
     border-right: 1px solid rgba(255,255,255,0.06) !important;
+}}
+section[data-testid="stSidebar"] > div {{
+    transform: none !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
+    visibility: visible !important;
 }}
 section[data-testid="stSidebar"]::before {{
     content: '';
@@ -658,9 +680,14 @@ LOGIN_PAGE_CSS = f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;1,9..40,400&display=swap');
 
-section[data-testid="stSidebar"] {{ display: none !important; }}
-header[data-testid="stHeader"] {{
-    background: transparent !important;
+[data-testid="stAppViewContainer"]:has(.lc-login-root-marker) section[data-testid="stSidebar"] {{
+    display: none !important;
+}}
+[data-testid="stAppViewContainer"]:has(.lc-login-root-marker) header[data-testid="stHeader"] {{
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    min-height: 0 !important;
 }}
 .lc-login-root-marker {{ display: none; }}
 

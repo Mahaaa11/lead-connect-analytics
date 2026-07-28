@@ -62,6 +62,7 @@ EXCLUSION_STATUSES = {
 STATUS_DISPLAY_ORDER = [
     "Répondeur",
     "Refus",
+    "Raccroche au nez",
     "Hors cible",
     "Pas de collaboration",
     "Ne jamais appeler",

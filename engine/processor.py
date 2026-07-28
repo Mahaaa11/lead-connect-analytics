@@ -22,6 +22,7 @@ DEFAULT_STATUS_MAPPING: dict[int, str] = {
     96: "Indisponible",
     99: "Injoignable",
     3: "Hors cible",
+    14: "Raccroche au nez",
 }
 
 DEFAULT_COLOR_FILLS: dict[str, str] = {

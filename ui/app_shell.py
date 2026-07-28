@@ -33,6 +33,22 @@ def inject_global_theme() -> None:
 
     importlib.reload(brand_theme)
     st.markdown(brand_theme.GLOBAL_CSS, unsafe_allow_html=True)
+    # Override any stale login-page CSS that hid the sidebar after authentication.
+    if st.session_state.get("authenticated"):
+        st.markdown(
+            """
+            <style>
+            section[data-testid="stSidebar"] {
+                display: block !important;
+                visibility: visible !important;
+                transform: translateX(0) !important;
+                min-width: 21rem !important;
+                width: 21rem !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_sidebar_brand() -> None:

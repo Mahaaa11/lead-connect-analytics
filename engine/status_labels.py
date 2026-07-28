@@ -44,6 +44,7 @@ _LIB_ALIASES: dict[str, str] = {
     "ne jamais appeler": "Ne jamais appeler",
     "rappel personnel": "Rappel Personnel",
     "a relancer": "A Relancer",
+    "raccroche au nez": "Raccroche au nez",
     "pas decisionaire": "Pas décisionnaire",
     "pas décisionnaire": "Pas décisionnaire",
     "vente": "Vente",
