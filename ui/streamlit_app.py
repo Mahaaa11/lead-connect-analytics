@@ -45,13 +45,25 @@ def _invalidate_store_caches() -> None:
 _ON_STREAMLIT_CLOUD = os.environ.get("STREAMLIT_SERVER_HEADLESS", "").lower() == "true"
 
 
+def _load_agent_analytics():
+    """Return a fresh agent_analytics module (avoids stale cached signatures)."""
+    import inspect
+
+    from engine import agent_analytics
+
+    params = inspect.signature(agent_analytics.compute_agent_statistics).parameters
+    if "df_db" not in params:
+        importlib.reload(agent_analytics)
+    return agent_analytics
+
+
 @st.cache_data(ttl=300, show_spinner="Analyse des agents…")
 def _cached_agent_statistics(
     token: str,
     days_back: int,
     threshold: int,
 ) -> dict[str, Any]:
-    from engine import agent_analytics
+    agent_analytics = _load_agent_analytics()
 
     df_hist = database.load_history()
     df_db = database.load_db()
@@ -1768,7 +1780,7 @@ def _render_export_agent_statistics(
     refresh: bool,
 ) -> None:
     """Agent QA panel: status mix + short Refus/Collab alerts."""
-    from engine import agent_analytics
+    agent_analytics = _load_agent_analytics()
 
     can_analyze = (use_store and database.store_exists()) or hist_file is not None
     if not can_analyze:
