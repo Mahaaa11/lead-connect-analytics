@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-28i"
+APP_VERSION = "2026-07-28j"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -31,6 +31,7 @@ def _cached_store_stats() -> dict[str, Any]:
 
 def _invalidate_store_caches() -> None:
     _cached_store_stats.clear()
+    _cached_agent_statistics.clear()
     for key in (
         "data_client_metrics_key",
         "performance_metrics_key",
@@ -42,6 +43,22 @@ def _invalidate_store_caches() -> None:
 
 
 _ON_STREAMLIT_CLOUD = os.environ.get("STREAMLIT_SERVER_HEADLESS", "").lower() == "true"
+
+
+@st.cache_data(ttl=300, show_spinner="Analyse des agents…")
+def _cached_agent_statistics(
+    token: str,
+    days_back: int,
+    threshold: int,
+) -> dict[str, Any]:
+    from engine import agent_analytics
+
+    df_hist = database.load_history()
+    return agent_analytics.compute_agent_statistics(
+        df_hist,
+        short_call_threshold_sec=int(threshold),
+        days_back=int(days_back) if int(days_back) > 0 else None,
+    )
 
 import engine.database as database
 if not _ON_STREAMLIT_CLOUD:
@@ -89,6 +106,7 @@ render_login_page = login_page.render_login_page
 render_logout_button = login_page.render_logout_button
 import engine.analytics_hub as analytics_hub
 import engine.ventes_analytics as ventes_analytics
+from ui.agent_stats_board import render_agent_statistics
 
 ALL_COLORS = processor.ALL_COLORS
 DEFAULT_STATUS_MAPPING = processor.DEFAULT_STATUS_MAPPING
@@ -1739,6 +1757,61 @@ def _render_persisted_daily_uploads() -> tuple:
     return merge_daily_db, merge_daily_hist, merge_daily_onoff, allow_new_tels, merge_and_export_btn
 
 
+def _render_export_agent_statistics(
+    *,
+    use_store: bool,
+    hist_file,
+    days_back: int,
+    threshold: int,
+    refresh: bool,
+) -> None:
+    """Agent QA panel: status mix + short Refus/Collab alerts."""
+    from engine import agent_analytics
+
+    can_analyze = (use_store and database.store_exists()) or hist_file is not None
+    if not can_analyze:
+        st.info(
+            "Chargez l'historique (base enregistrée ou upload) pour analyser les agents."
+        )
+        return
+
+    cache_key = (
+        f"{_store_cache_token()}|upload:{getattr(hist_file, 'name', '')}|"
+        f"{days_back}|{threshold}"
+    )
+    if not refresh and "agent_stats_metrics" not in st.session_state:
+        st.info(
+            "Cliquez **Analyser les agents** dans la barre latérale pour afficher "
+            "les statuts posés par agent et les alertes Refus / Pas de collab < 4 s."
+        )
+        return
+
+    session_key = "agent_stats_cache_key"
+    if refresh or st.session_state.get(session_key) != cache_key:
+        st.session_state[session_key] = cache_key
+        st.session_state.pop("agent_stats_metrics", None)
+
+    if "agent_stats_metrics" not in st.session_state or refresh:
+        try:
+            if use_store and database.store_exists():
+                metrics = _cached_agent_statistics(cache_key, days_back, threshold)
+            else:
+                hist_df = database._prepare_hist_frame(
+                    database._read_import(hist_file, is_history=True)
+                )
+                metrics = agent_analytics.compute_agent_statistics(
+                    hist_df,
+                    short_call_threshold_sec=int(threshold),
+                    days_back=int(days_back) if int(days_back) > 0 else None,
+                )
+            st.session_state["agent_stats_metrics"] = metrics
+        except Exception as exc:
+            st.error(f"Analyse agents impossible : {exc}")
+            return
+
+    render_agent_statistics(st.session_state["agent_stats_metrics"])
+
+
 def _run_export(
     *,
     db_file,
@@ -1898,6 +1971,10 @@ with st.sidebar:
     else:
         use_store = store_ready
         db_file = hist_file = None
+
+    agent_period_days = 0
+    agent_short_threshold = 4
+    agent_analyze_btn = False
 
     if app_mode == "overview":
         init_btn = daily_btn = generate = merge_all_btn = False
@@ -2722,6 +2799,30 @@ with st.sidebar:
 
         st.divider()
         generate = st.button("Générer l'export", type="primary", use_container_width=True)
+
+        st.divider()
+        st.header("Statistiques agents")
+        agent_period_days = st.selectbox(
+            "Période d'analyse",
+            options=[0, 7, 30, 90],
+            index=2,
+            format_func=lambda x: "Tout l'historique" if x == 0 else f"{x} derniers jours",
+            key="export_agent_period",
+        )
+        agent_short_threshold = st.number_input(
+            "Seuil alerte durée (Refus / Pas de collab)",
+            min_value=1,
+            max_value=60,
+            value=4,
+            step=1,
+            help="Alerte ⚠️ si l'agent statue Refus ou Pas de collaboration avec une durée inférieure à ce seuil.",
+            key="export_agent_threshold",
+        )
+        agent_analyze_btn = st.button(
+            "Analyser les agents",
+            use_container_width=True,
+            key="export_agent_analyze_btn",
+        )
         data_client_filters = None
 
 
@@ -2802,7 +2903,7 @@ else:
     section_titles = {
         "dashboard": ("Performance", "Conversion, parcours statuts, obsolètes, ventes"),
         "forecast": ("Prévisionnel", "Projection J+1 à J+7, quotas et export"),
-        "export": ("Export recyclage", "Sélection par statut, couleur et quotas"),
+        "export": ("Export recyclage", "Sélection par statut, couleur, quotas et stats agents"),
         "database": ("Base de données", "Fusion quotidienne et persistance PostgreSQL"),
     }
     if app_mode in section_titles:
@@ -3120,6 +3221,15 @@ else:
 
             if database.store_exists() and use_store:
                 _render_store_stats()
+
+            st.divider()
+            _render_export_agent_statistics(
+                use_store=use_store,
+                hist_file=hist_file,
+                days_back=agent_period_days,
+                threshold=agent_short_threshold,
+                refresh=agent_analyze_btn,
+            )
 
             if generate:
                 if not use_store and (not db_file or not hist_file):
