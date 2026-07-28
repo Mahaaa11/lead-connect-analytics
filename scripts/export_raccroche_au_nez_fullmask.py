@@ -163,9 +163,9 @@ def export_raccroche_fullmask(output_path: Path | None = None) -> tuple[Path, in
 
 
 def main() -> None:
-    import os
+    from engine.config_env import bootstrap_env
 
-    os.environ.setdefault("FORCE_SQLITE", "1")
+    bootstrap_env()
     path, n, colors = export_raccroche_fullmask()
     print(f"Export : {path}")
     print(f"Lignes : {n:,}")

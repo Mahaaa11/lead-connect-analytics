@@ -73,8 +73,8 @@ def render_login_page() -> None:
         if db_error:
             st.error(
                 f"Impossible de joindre la base de données : {db_error}\n\n"
-                "En local : relancez avec `./run.sh` (SQLite). "
-                "Vérifiez que `data/store/recyclage.db` existe."
+                "Vérifiez **DATABASE_URL** dans `.env` (local) ou les secrets Streamlit "
+                "(format `postgresql://...?sslmode=require`)."
             )
         else:
             try:

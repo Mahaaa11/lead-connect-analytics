@@ -10,7 +10,6 @@ _ENV_KEYS = (
     "APP_DEFAULT_USER",
     "APP_DEFAULT_PASSWORD",
     "APP_RESET_PASSWORD_ON_START",
-    "FORCE_SQLITE",
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,23 +77,20 @@ def _load_streamlit_secrets() -> None:
 
 
 def resolve_database_url() -> str:
-    """PostgreSQL when DATABASE_URL is set (cloud), else SQLite local file."""
+    """Return PostgreSQL URL from DATABASE_URL (required)."""
     bootstrap_env()
-    if os.environ.get("FORCE_SQLITE", "").strip().lower() in ("1", "true", "yes"):
-        DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{DEFAULT_SQLITE_PATH}"
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
-        DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{DEFAULT_SQLITE_PATH}"
+        raise RuntimeError(
+            "DATABASE_URL manquant. Configurez PostgreSQL dans .env ou les secrets Streamlit.\n"
+            "Exemple : DATABASE_URL=postgresql://user:pass@host/db?sslmode=require"
+        )
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
     if url.startswith("postgresql"):
         return url
-    if url.startswith("sqlite:"):
-        return url
     raise RuntimeError(
-        "DATABASE_URL non reconnu. Utilisez postgresql://... ou laissez vide pour SQLite local."
+        "DATABASE_URL non reconnu. Utilisez une URL PostgreSQL (postgresql://...)."
     )
 
 
