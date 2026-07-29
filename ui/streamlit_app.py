@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-29c"
+APP_VERSION = "2026-07-29d"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -1491,8 +1491,6 @@ def _render_diagnostics(stats: dict) -> None:
 
 def _render_store_stats(*, before: dict[str, Any] | None = None) -> None:
     stats = _cached_store_stats()
-    backend = stats.get("backend", "—")
-    st.caption(f"Stockage : **{backend}** — {stats.get('database_url_hint', '')}")
     c1, c2, c3, c4 = st.columns(4)
 
     def _delta(key: str) -> str | None:
@@ -1546,11 +1544,10 @@ def _render_merge_persistence_report(
 ) -> None:
     """Résumé clair : ce qui a été enregistré sur la base persistante."""
     after_stats = report.get("store") or database.get_store_stats()
-    db_path = after_stats.get("database_url_hint", "recyclage.db")
 
     st.success(
-        f"**Enregistré sur la base persistante** — {db_path}\n\n"
-        "Les fusions du jour sont sauvegardées dans PostgreSQL. "
+        "**Enregistré sur la base persistante**\n\n"
+        "Les fusions du jour sont sauvegardées. "
         "Demain, uploadez uniquement les nouveaux fichiers du jour."
     )
 
@@ -1989,7 +1986,7 @@ with st.sidebar:
     store_stats = _cached_store_stats()
     store_ready = bool(store_stats.get("initialized"))
     if store_stats.get("error"):
-        st.error(f"Base PostgreSQL : {store_stats['error']}")
+        st.error(f"Base de données : {store_stats['error']}")
 
     analytics_modes = {"overview", "data_client", "ventes", "dashboard"}
     if app_mode in analytics_modes:
@@ -2776,10 +2773,7 @@ with st.sidebar:
 
         st.header("Fichiers")
         if use_store:
-            store_stats = database.get_store_stats()
-            st.info(
-                f"Export depuis la base enregistrée ({store_stats.get('backend', 'SQL')})."
-            )
+            st.info("Export depuis la base enregistrée.")
             db_file = hist_file = onoff_files = None
         else:
             db_file = st.file_uploader("Base client (DB)", type=["xls", "xlsx", "xlsm"])
@@ -2944,7 +2938,7 @@ else:
         "dashboard": ("Performance", "Conversion, parcours statuts, obsolètes, ventes"),
         "forecast": ("Prévisionnel", "Projection J+1 à J+7, quotas et export"),
         "export": ("Export recyclage", "Sélection par statut, couleur, quotas et stats agents"),
-        "database": ("Base de données", "Fusion quotidienne et persistance PostgreSQL"),
+        "database": ("Base de données", "Fusion quotidienne et sauvegarde persistante"),
     }
     if app_mode in section_titles:
         title, subtitle = section_titles[app_mode]

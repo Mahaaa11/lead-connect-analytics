@@ -238,7 +238,7 @@ def _overview_html(metrics: dict[str, Any], *, overview_css: str | None = None) 
     <div class="mod"><div class="mod-num">02</div><h3>Performance</h3><p>Conversion vente, parcours statuts, obsolètes, doublons, relances, suivi ventes.</p></div>
     <div class="mod"><div class="mod-num">03</div><h3>Prévisionnel</h3><p>Projection J+1 à J+7, quotas, exclusion Book1, export coloré.</p></div>
     <div class="mod"><div class="mod-num">04</div><h3>Export recyclage</h3><p>Sélection par statut/couleur, quotas, durées Onoff, masque Excel.</p></div>
-    <div class="mod"><div class="mod-num">05</div><h3>Base de données</h3><p>Fusion quotidienne, persistance PostgreSQL, filtres FICHIER, export complet.</p></div>
+    <div class="mod"><div class="mod-num">05</div><h3>Base de données</h3><p>Fusion quotidienne, sauvegarde persistante, filtres FICHIER, export complet.</p></div>
     <div class="mod"><div class="mod-num">06</div><h3>Ventes</h3><p>Suivi quotidien statut d'origine, baseline snapshot, analyse export_data_client.</p></div>
   </div>
 </div>

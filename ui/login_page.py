@@ -58,7 +58,7 @@ def render_login_page() -> None:
               <div class="lc-logo-card">
                 {brand_logo.logo_img_html(max_width="260px")}
               </div>
-              <p class="lc-brand-eyebrow">Plateforme Analytics · FÈS</p>
+              <p class="lc-brand-eyebrow">Plateforme Analytics</p>
               <h1 class="lc-brand-title">Vos données.<br/>Votre performance.</h1>
               <p class="lc-brand-desc">
                 Analyse, ventes, recyclage et suivi quotidien — en un seul espace.
@@ -76,13 +76,6 @@ def render_login_page() -> None:
                 "Vérifiez **DATABASE_URL** dans `.env` (local) ou les secrets Streamlit "
                 "(format `postgresql://...?sslmode=require`)."
             )
-        else:
-            try:
-                db = _database_module()
-                backend = db._database_url_hint()
-                st.caption(f"Base : **{backend}**")
-            except Exception:
-                pass
 
         st.markdown(
             """
@@ -114,12 +107,7 @@ def render_login_page() -> None:
                 st.error("Identifiant et mot de passe sont obligatoires.")
             else:
                 try:
-                    spinner = (
-                        "Connexion à PostgreSQL… (Neon peut prendre 10–20 s au 1er accès)"
-                        if db._database_url_hint().startswith("PostgreSQL")
-                        else "Connexion…"
-                    )
-                    with st.spinner(spinner):
+                    with st.spinner("Connexion…"):
                         ok = db.authenticate(user, password)
                 except Exception as exc:
                     st.error(f"Erreur base de données : {exc}")
