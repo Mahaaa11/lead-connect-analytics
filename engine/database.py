@@ -559,6 +559,28 @@ def apply_daily_update(
     return report
 
 
+# Fichiers écartés des analyses : résultats trompeurs, jamais exploités.
+DEFAULT_EXCLUDED_FICHIERS = [
+    "DB_JANV_A_JUILL_25",
+    "Data_2022_Mai-Avr",
+    "data_2022_Aout-Dec",
+    "data_2022_Avr-Janv",
+    "data_2022_juill-juin",
+]
+
+
+def exclude_fichiers(
+    df: pd.DataFrame,
+    fichiers: list[str] | None = None,
+) -> pd.DataFrame:
+    """Drop client rows whose FICHIER is in the exclusion list (default list if None)."""
+    fichiers = DEFAULT_EXCLUDED_FICHIERS if fichiers is None else fichiers
+    if df.empty or "FICHIER" not in df.columns or not fichiers:
+        return df
+    normalized = df["FICHIER"].fillna("").astype(str).str.strip()
+    return df[~normalized.isin({f.strip() for f in fichiers})].copy()
+
+
 def get_fichier_values() -> list[str]:
     """Return sorted unique FICHIER values from the client DB."""
     _ensure_storage()

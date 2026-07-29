@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-29b"
+APP_VERSION = "2026-07-29c"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -523,7 +523,7 @@ def _render_data_client_dashboard(
                 return
             with st.spinner("Calcul du tableau de bord Data Client…"):
                 metrics = data_client_dashboard.compute_data_client_dashboard(
-                    database.load_db(),
+                    database.exclude_fichiers(database.load_db()),
                     database.load_history(),
                     year=year,
                     month=month,
@@ -541,13 +541,17 @@ def _render_data_client_dashboard(
                 else:
                     df_hist = processor._read_excel(hist_file, is_history=True)
                 metrics = data_client_dashboard.compute_data_client_dashboard(
-                    df_db,
+                    database.exclude_fichiers(df_db),
                     df_hist,
                     year=year,
                     month=month,
                     colors=colors,
                     statuses=statuses,
                 )
+        st.caption(
+            "Fichiers exclus de l'analyse : "
+            + ", ".join(database.DEFAULT_EXCLUDED_FICHIERS)
+        )
     except Exception as exc:
         st.error(f"Erreur tableau de bord Data Client : {exc}")
         return
@@ -2324,7 +2328,7 @@ with st.sidebar:
         st.markdown("**Filtre FICHIER (avant export final)**")
         fichier_filter_enabled = st.checkbox(
             "Activer le filtre FICHIER sur l'export",
-            value=False,
+            value=True,
             key="db_fichier_filter_enabled",
             help="Les FICHIER sélectionnés/exclus sont retirés du fichier Excel final.",
             on_change=_clear_export_cache,
@@ -2335,6 +2339,7 @@ with st.sidebar:
             fichier_filter_mode = st.radio(
                 "Mode filtre",
                 options=["include", "exclude"],
+                index=1,
                 format_func=lambda x: {
                     "include": "Conserver uniquement ces FICHIER",
                     "exclude": "Exclure ces FICHIER de l'export",
@@ -2352,7 +2357,12 @@ with st.sidebar:
             else:
                 fichier_options = []
             if fichier_options:
-                default_values = fichier_options if fichier_filter_mode == "exclude" else []
+                if fichier_filter_mode == "exclude":
+                    default_values = [
+                        f for f in database.DEFAULT_EXCLUDED_FICHIERS if f in fichier_options
+                    ]
+                else:
+                    default_values = []
                 selected_fichiers = st.multiselect(
                     "Valeurs FICHIER",
                     options=fichier_options,
