@@ -23,17 +23,24 @@ from engine.processor import (
 )
 from engine.status_labels import apply_resolved_status_labels, collapse_status_table, group_transition_frame
 
+# Une vente sans appel antérieur dans l'historique n'a pas de couleur "avant vente".
+NO_PRIOR_CONTACT_LABEL = "Sans contact précédent"
+
 _COLOR_DISPLAY: dict[str, str] = {
     "Green": "Vert",
     "Blue": "Bleu",
     "Orange": "Orange",
     "Red": "Rouge",
-    "Unknown": "Noir",
+    "Unknown": NO_PRIOR_CONTACT_LABEL,
 }
 
 
 def _color_to_display(series: pd.Series) -> pd.Series:
-    return series.astype(str).map(lambda c: _COLOR_DISPLAY.get(c, "Noir")).fillna("Noir")
+    return (
+        series.astype(str)
+        .map(lambda c: _COLOR_DISPLAY.get(c, NO_PRIOR_CONTACT_LABEL))
+        .fillna(NO_PRIOR_CONTACT_LABEL)
+    )
 
 
 COLOR_LABELS_FR: dict[str, str] = {

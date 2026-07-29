@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-29d"
+APP_VERSION = "2026-07-29e"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -2159,10 +2159,11 @@ with st.sidebar:
         v_month = month_values[v_month_idx]
         v_prior_colors = st.multiselect(
             "Couleur avant vente",
-            options=data_client_dashboard.COLOR_DISPLAY_ORDER,
+            options=data_client_dashboard.PRIOR_COLOR_DISPLAY_ORDER,
             default=[],
             key="ventes_prior_colors",
-            help="Filtre sur la couleur du contact avant la vente.",
+            help="Filtre sur la couleur du contact avant la vente. "
+            "« Sans contact précédent » = la vente est le premier appel connu.",
         )
         v_prior_statuses = st.multiselect(
             "Statut avant vente",

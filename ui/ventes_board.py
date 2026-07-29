@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from engine.data_client_dashboard import (
-    COLOR_DISPLAY_ORDER,
+    PRIOR_COLOR_DISPLAY_ORDER,
     STATUS_DISPLAY_ORDER,
     color_hex_for_label,
 )
@@ -156,7 +156,10 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
 
         with col_c:
             st.markdown("**Quelle couleur mène à la vente ?**")
-            st.caption("Couleur du contact avant la vente (ancienneté dernier contact).")
+            st.caption(
+                "Couleur du contact avant la vente (ancienneté du dernier contact). "
+                "« Sans contact précédent » = aucun appel antérieur dans l'historique."
+            )
             if not by_color.empty:
                 value_col = "Part_des_ventes_%" if "Part_des_ventes_%" in by_color.columns else "Ventes"
                 _render_colored_bar_chart(
@@ -208,11 +211,12 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
                 fill_value=0,
                 aggfunc="sum",
             )
-            for col in COLOR_DISPLAY_ORDER:
+            for col in PRIOR_COLOR_DISPLAY_ORDER:
                 if col not in pivot.columns:
                     pivot[col] = 0
-            ordered_cols = [c for c in COLOR_DISPLAY_ORDER if c in pivot.columns]
-            pivot = pivot[ordered_cols]
+            ordered_cols = [c for c in PRIOR_COLOR_DISPLAY_ORDER if c in pivot.columns]
+            extra_cols = [c for c in pivot.columns if c not in ordered_cols]
+            pivot = pivot[ordered_cols + extra_cols]
             st.dataframe(pivot.astype(int), use_container_width=True)
             top_pairs = matrix.nlargest(15, "Ventes")
             st.bar_chart(top_pairs.set_index("Statut_précédent")["Ventes"])

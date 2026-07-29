@@ -25,6 +25,8 @@ from engine.processor import (
 
 # Libellés affichés dans le tableau de bord corporate
 COLOR_DISPLAY_ORDER = ["Vert", "Bleu", "Orange", "Rouge", "Noir"]
+# Vue Ventes : la "couleur avant vente" absente = aucun appel antérieur connu.
+PRIOR_COLOR_DISPLAY_ORDER = ["Vert", "Bleu", "Orange", "Rouge", "Sans contact précédent"]
 COLOR_TO_DISPLAY: dict[str, str] = {
     "Green": "Vert",
     "Blue": "Bleu",
@@ -40,6 +42,7 @@ COLOR_HEX: dict[str, str] = {
     "Orange": "#FF9800",
     "Rouge": "#F44336",
     "Noir": "#424242",
+    "Sans contact précédent": "#424242",
     # Aliases (legacy / internal keys)
     "Jaune": "#2196F3",
     "Green": "#4CAF50",
