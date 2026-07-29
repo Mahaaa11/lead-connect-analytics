@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import BinaryIO, Literal
 
 import pandas as pd
-from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
 DEFAULT_STATUS_MAPPING: dict[int, str] = {
@@ -1186,84 +1185,159 @@ def export_excel(
         )
 
     available_cols = _order_export_columns(filtered.columns.tolist())
-    buffer = io.BytesIO()
-    output_target: str | Path | io.BytesIO = output_path or buffer
 
-    with pd.ExcelWriter(output_target, engine="openpyxl") as writer:
-        for category, grp in filtered.groupby("Status_Category"):
-            grp = _sort_export_rows(grp, sort_priority=sort_priority)
+    try:
+        import xlsxwriter  # noqa: F401
 
-            summary_metrics = [
-                "Unique TEL",
-                "Oldest Contact (days)",
-                "Average Age (days)",
-            ]
-            summary_values = [
-                grp["TEL"].nunique(),
-                grp["Days_Since_Last_Call"].max(),
-                round(grp["Days_Since_Last_Call"].mean(), 1),
-            ]
-            if "Total_Duration_Seconds" in grp.columns:
-                summary_metrics.append("Total Duration (hh:mm:ss)")
-                summary_values.append(
-                    _format_duration(int(grp["Total_Duration_Seconds"].sum()))
-                )
-
-            summary = pd.DataFrame(
-                {
-                    "Metric": summary_metrics,
-                    "Value": summary_values,
-                }
-            )
-
-            sheet_name = str(category)[:31]
-            summary.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0)
-            grp[available_cols].to_excel(
-                writer, sheet_name=sheet_name, index=False, startrow=5
-            )
+        excel_bytes = _write_export_xlsxwriter(
+            filtered,
+            available_cols,
+            color_fills=color_fills,
+            sort_priority=sort_priority,
+        )
+    except ImportError:
+        excel_bytes = _write_export_openpyxl(
+            filtered,
+            available_cols,
+            color_fills=color_fills,
+            sort_priority=sort_priority,
+        )
 
     if output_path:
-        wb = load_workbook(output_path)
-    else:
-        buffer.seek(0)
-        wb = load_workbook(buffer)
+        Path(output_path).write_bytes(excel_bytes)
+    return excel_bytes
 
+
+def _sheet_summary_frame(grp: pd.DataFrame) -> pd.DataFrame:
+    summary_metrics = [
+        "Unique TEL",
+        "Oldest Contact (days)",
+        "Average Age (days)",
+    ]
+    summary_values = [
+        grp["TEL"].nunique(),
+        grp["Days_Since_Last_Call"].max(),
+        round(grp["Days_Since_Last_Call"].mean(), 1),
+    ]
+    if "Total_Duration_Seconds" in grp.columns:
+        summary_metrics.append("Total Duration (hh:mm:ss)")
+        summary_values.append(
+            _format_duration(int(grp["Total_Duration_Seconds"].sum()))
+        )
+    return pd.DataFrame({"Metric": summary_metrics, "Value": summary_values})
+
+
+def _column_widths(df: pd.DataFrame, *, sample_rows: int = 200) -> list[int]:
+    """Approximate column widths from the header + a sample of rows."""
+    sample = df.head(sample_rows)
+    widths: list[int] = []
+    for col in df.columns:
+        max_length = len(str(col))
+        for value in sample[col].tolist():
+            try:
+                max_length = max(max_length, len(str(value)))
+            except Exception:
+                pass
+        widths.append(min(max_length + 2, 40))
+    return widths
+
+
+def _write_export_xlsxwriter(
+    filtered: pd.DataFrame,
+    available_cols: list[str],
+    *,
+    color_fills: dict[str, str],
+    sort_priority: SortPriority,
+) -> bytes:
+    """Fast export path: single write pass, fills via conditional formats."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(
+        buffer,
+        engine="xlsxwriter",
+        engine_kwargs={"options": {"nan_inf_to_errors": True}},
+    ) as writer:
+        formats = {
+            name: writer.book.add_format({"bg_color": f"#{hex_color}"})
+            for name, hex_color in color_fills.items()
+        }
+        color_idx = available_cols.index("Color") if "Color" in available_cols else None
+
+        for category, grp in filtered.groupby("Status_Category"):
+            grp = _sort_export_rows(grp, sort_priority=sort_priority)
+            sheet_name = str(category)[:31]
+            summary = _sheet_summary_frame(grp)
+            summary.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0)
+            data = grp[available_cols]
+            data.to_excel(writer, sheet_name=sheet_name, index=False, startrow=5)
+
+            ws = writer.sheets[sheet_name]
+            if color_idx is not None:
+                last_row = 5 + len(data)
+                for name, fmt in formats.items():
+                    ws.conditional_format(
+                        6,
+                        color_idx,
+                        last_row,
+                        color_idx,
+                        {
+                            "type": "cell",
+                            "criteria": "==",
+                            "value": f'"{name}"',
+                            "format": fmt,
+                        },
+                    )
+            widths = _column_widths(data)
+            # Widen the two first columns to fit the summary block too.
+            for pos, series in enumerate([summary["Metric"], summary["Value"]]):
+                if pos < len(widths):
+                    summary_len = max(len(str(v)) for v in series.tolist())
+                    widths[pos] = max(widths[pos], min(summary_len + 2, 40))
+            for idx, width in enumerate(widths):
+                ws.set_column(idx, idx, width)
+    return buffer.getvalue()
+
+
+def _write_export_openpyxl(
+    filtered: pd.DataFrame,
+    available_cols: list[str],
+    *,
+    color_fills: dict[str, str],
+    sort_priority: SortPriority,
+) -> bytes:
+    """Fallback export path: style the in-memory workbook (no reload/resave)."""
+    buffer = io.BytesIO()
     fills = {
         name: PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
         for name, hex_color in color_fills.items()
     }
 
-    for ws in wb.worksheets:
-        headers = [c.value for c in ws[6]]
-        if "Color" not in headers:
-            continue
-        color_col = headers.index("Color") + 1
-        for row in range(7, ws.max_row + 1):
-            cell = ws.cell(row, color_col)
-            fill = fills.get(cell.value)
-            if fill:
-                cell.fill = fill
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for category, grp in filtered.groupby("Status_Category"):
+            grp = _sort_export_rows(grp, sort_priority=sort_priority)
+            sheet_name = str(category)[:31]
+            summary = _sheet_summary_frame(grp)
+            summary.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0)
+            data = grp[available_cols]
+            data.to_excel(writer, sheet_name=sheet_name, index=False, startrow=5)
 
-    for ws in wb.worksheets:
-        for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    max_length = max(max_length, len(str(cell.value)))
-                except Exception:
-                    pass
-            ws.column_dimensions[column_letter].width = min(max_length + 2, 40)
+            ws = writer.sheets[sheet_name]
+            if "Color" in available_cols:
+                color_col = available_cols.index("Color") + 1
+                for row in range(7, ws.max_row + 1):
+                    cell = ws.cell(row, color_col)
+                    fill = fills.get(cell.value)
+                    if fill:
+                        cell.fill = fill
+            widths = _column_widths(data)
+            for pos, series in enumerate([summary["Metric"], summary["Value"]]):
+                if pos < len(widths):
+                    summary_len = max(len(str(v)) for v in series.tolist())
+                    widths[pos] = max(widths[pos], min(summary_len + 2, 40))
+            for idx, width in enumerate(widths):
+                letter = ws.cell(row=6, column=idx + 1).column_letter
+                ws.column_dimensions[letter].width = width
 
-    if output_path:
-        wb.save(output_path)
-        out = io.BytesIO()
-        wb.save(out)
-        return out.getvalue()
-
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    return buffer.getvalue()
 
 
 def process_and_export(

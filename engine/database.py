@@ -326,14 +326,26 @@ def update_db_from_daily(
     return update_db_from_daily_files([daily_source], allow_new_tels=allow_new_tels)
 
 
+def _load_daily_db_frame(
+    daily_sources: list[str | Path | BinaryIO],
+) -> pd.DataFrame:
+    """Read + prepare daily DB export(s) into a single deduplicated frame."""
+    daily_frames: list[pd.DataFrame] = []
+    for source in daily_sources:
+        daily_frames.append(_prepare_db_frame(_read_import(source, is_history=False)))
+    daily = pd.concat(daily_frames, ignore_index=True)
+    return daily.drop_duplicates(subset=["TEL"], keep="last")
+
+
 def update_db_from_daily_files(
     daily_sources: list[str | Path | BinaryIO],
     *,
     allow_new_tels: bool = False,
     master_tels: set[str] | None = None,
+    daily_frame: pd.DataFrame | None = None,
 ) -> dict[str, int]:
     """Merge one or more daily DB exports into the master by TEL (upsert, no full rewrite)."""
-    if not daily_sources:
+    if not daily_sources and daily_frame is None:
         raise ValueError("Aucun fichier data du jour.")
 
     if master_tels is None:
@@ -343,12 +355,7 @@ def update_db_from_daily_files(
             master_tels = set(load_db()["TEL"].dropna().astype(str))
     master_tels_before = len(master_tels)
 
-    daily_frames: list[pd.DataFrame] = []
-    for source in daily_sources:
-        daily_frames.append(_prepare_db_frame(_read_import(source, is_history=False)))
-
-    daily = pd.concat(daily_frames, ignore_index=True)
-    daily = daily.drop_duplicates(subset=["TEL"], keep="last")
+    daily = daily_frame if daily_frame is not None else _load_daily_db_frame(daily_sources)
     daily_tels = set(daily["TEL"].dropna().astype(str))
     common = master_tels.intersection(daily_tels)
     unmatched = daily_tels - master_tels
@@ -383,14 +390,20 @@ def append_history_from_daily(daily_source: str | Path | BinaryIO) -> dict[str, 
 
 def append_history_from_daily_files(
     daily_sources: list[str | Path | BinaryIO],
+    *,
+    prepared_frames: list[pd.DataFrame] | None = None,
 ) -> dict[str, int]:
     """Append history rows from one or more daily exports."""
-    if not daily_sources:
+    if not daily_sources and not prepared_frames:
         raise ValueError("Aucun fichier histo du jour.")
 
+    if prepared_frames is None:
+        prepared_frames = [
+            _prepare_hist_frame(_read_import(source, is_history=True))
+            for source in daily_sources
+        ]
     rows_added = 0
-    for source in daily_sources:
-        daily = _prepare_hist_frame(_read_import(source, is_history=True))
+    for daily in prepared_frames:
         rows_added += storage.append_history(daily)
 
     return {
@@ -458,8 +471,14 @@ def apply_daily_update(
     daily_onoff: list[str | Path | BinaryIO] | None = None,
     allow_new_tels: bool = False,
     label: str | None = None,
+    return_frames: bool = False,
 ) -> dict[str, Any]:
-    """Apply a daily import: update DB, append history and Onoff."""
+    """Apply a daily import: update DB, append history and Onoff.
+
+    With ``return_frames=True``, the updated (df_db, df_hist) frames are returned
+    under ``report["frames"]`` so callers can build the export without reloading
+    the whole store from the database (major win on remote PostgreSQL).
+    """
     if not store_exists():
         raise FileNotFoundError(
             "Base non initialisée. Importez d'abord la DB et l'historique master."
@@ -470,10 +489,14 @@ def apply_daily_update(
     if not daily_db_files and not daily_hist_files and not daily_onoff:
         raise ValueError("Fournissez au moins un fichier du jour (DB, historique ou Onoff).")
 
-    report: dict[str, Any] = {}
-    if daily_db_files:
+    df_db: pd.DataFrame | None = None
+    df_hist: pd.DataFrame | None = None
+    if daily_db_files or return_frames:
         df_db = load_db()
         df_hist = load_history()
+
+    report: dict[str, Any] = {}
+    if daily_db_files:
         from engine.vente_tracking import baseline_from_store_latest
 
         baseline = baseline_from_store_latest(df_db, df_hist)
@@ -481,13 +504,39 @@ def apply_daily_update(
             "baseline_rows": _replace_vente_baseline_storage(baseline),
             "captured_at": datetime.now().isoformat(timespec="seconds"),
         }
+        master_tels = set(df_db["TEL"].dropna().astype(str))
+        daily_frame = _load_daily_db_frame(daily_db_files)
         report["db"] = update_db_from_daily_files(
             daily_db_files,
             allow_new_tels=allow_new_tels,
-            master_tels=set(df_db["TEL"].dropna().astype(str)),
+            master_tels=master_tels,
+            daily_frame=daily_frame,
         )
+        # Mirror the upsert in memory so the export can reuse the frames.
+        if allow_new_tels:
+            applied = daily_frame
+        else:
+            applied = daily_frame[daily_frame["TEL"].astype(str).isin(master_tels)]
+        if not applied.empty:
+            applied_tels = set(applied["TEL"].astype(str))
+            df_db = df_db[~df_db["TEL"].astype(str).isin(applied_tels)]
+            df_db = pd.concat([df_db, applied], ignore_index=True)
     if daily_hist_files:
-        report["history"] = append_history_from_daily_files(daily_hist_files)
+        hist_frames = [
+            _prepare_hist_frame(_read_import(source, is_history=True))
+            for source in daily_hist_files
+        ]
+        report["history"] = append_history_from_daily_files(
+            daily_hist_files,
+            prepared_frames=hist_frames,
+        )
+        if df_hist is not None:
+            df_hist = pd.concat([df_hist, *hist_frames], ignore_index=True)
+            dedupe_cols = [
+                c for c in ("TEL", "DATE", "HEURE", "STATUS") if c in df_hist.columns
+            ]
+            if dedupe_cols:
+                df_hist = df_hist.drop_duplicates(subset=dedupe_cols, keep="first")
     if daily_onoff:
         report["onoff"] = append_onoff_from_daily(daily_onoff)
 
@@ -500,8 +549,13 @@ def apply_daily_update(
             **report,
         }
     )
+    # Keep meta small: an ever-growing updates log slows every meta read/write.
+    if len(meta.get("updates", [])) > 30:
+        meta["updates"] = meta["updates"][-30:]
     _save_meta(meta)
     report["store"] = get_store_stats()
+    if return_frames and df_db is not None and df_hist is not None:
+        report["frames"] = (df_db, df_hist)
     return report
 
 
@@ -701,12 +755,21 @@ def frames_to_buffer(df: pd.DataFrame, *, name: str = "data.xlsx") -> io.BytesIO
     return buffer
 
 
-def process_merged_store() -> tuple[pd.DataFrame, dict, dict]:
-    """Build the full recyclage dataset from the persisted merged store."""
+def process_merged_store(
+    frames: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+) -> tuple[pd.DataFrame, dict, dict]:
+    """Build the full recyclage dataset from the persisted merged store.
+
+    ``frames`` lets callers pass already-loaded (df_db, df_hist) to skip the
+    expensive full reload from the database.
+    """
     from engine.processor import attach_repondeur_profiles, process_data
 
-    df_db = load_db()
-    df_hist = load_history()
+    if frames is not None:
+        df_db, df_hist = frames
+    else:
+        df_db = load_db()
+        df_hist = load_history()
     latest, pipeline_stats = process_data(
         df_db=df_db,
         df_hist=df_hist,

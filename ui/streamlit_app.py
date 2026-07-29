@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-29a"
+APP_VERSION = "2026-07-29b"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -43,6 +43,17 @@ def _invalidate_store_caches() -> None:
 
 
 _ON_STREAMLIT_CLOUD = os.environ.get("STREAMLIT_SERVER_HEADLESS", "").lower() == "true"
+
+
+def _call_supported(func, /, **kwargs):
+    """Call func with only the kwargs its current signature supports.
+
+    Guards against stale cached engine modules missing newer parameters.
+    """
+    import inspect
+
+    params = inspect.signature(func).parameters
+    return func(**{k: v for k, v in kwargs.items() if k in params})
 
 
 def _load_agent_analytics():
@@ -3024,19 +3035,25 @@ else:
                     try:
                         before_stats = _cached_store_stats()
                         with st.spinner("Mise à jour du jour en cours…"):
-                            report = database.apply_daily_update(
+                            report = _call_supported(
+                                database.apply_daily_update,
                                 daily_db=merge_daily_db,
                                 daily_hist=merge_daily_hist,
                                 daily_onoff=merge_daily_onoff or None,
                                 allow_new_tels=allow_new_tels,
                                 label="fusion quotidienne",
+                                return_frames=True,
                             )
+                        merged_frames = report.pop("frames", None)
                         _invalidate_store_caches()
                         st.subheader("Fusion enregistrée")
                         _render_merge_persistence_report(report, before_stats)
 
                         with st.spinner("Préparation export recyclage…"):
-                            precomputed = database.process_merged_store()
+                            precomputed = _call_supported(
+                                database.process_merged_store,
+                                frames=merged_frames,
+                            )
                         preview_rows = precomputed[0]
                         st.info(
                             f"Données fusionnées : **{len(preview_rows):,}** lignes exportables."
@@ -3127,16 +3144,24 @@ else:
                 else:
                     try:
                         before_stats = _cached_store_stats()
-                        report = database.apply_daily_update(
-                            daily_db=daily_db,
-                            daily_hist=daily_hist,
-                            daily_onoff=daily_onoff or None,
-                            allow_new_tels=allow_new_tels,
-                        )
+                        with st.spinner("Mise à jour du jour en cours…"):
+                            report = _call_supported(
+                                database.apply_daily_update,
+                                daily_db=daily_db,
+                                daily_hist=daily_hist,
+                                daily_onoff=daily_onoff or None,
+                                allow_new_tels=allow_new_tels,
+                                return_frames=True,
+                            )
+                        daily_frames = report.pop("frames", None)
                         _invalidate_store_caches()
                         st.subheader("Fusion enregistrée")
                         _render_merge_persistence_report(report, before_stats)
-                        preview_rows = database.process_merged_store()[0]
+                        with st.spinner("Préparation de l'aperçu…"):
+                            preview_rows = _call_supported(
+                                database.process_merged_store,
+                                frames=daily_frames,
+                            )[0]
                         st.info(
                             f"Base fusionnée prête : **{len(preview_rows):,}** lignes exportables. "
                             "Utilisez **Générer l'export complet** pour obtenir le fichier type (15).xlsx."
