@@ -806,12 +806,22 @@ def export_full_recyclage(
         selected_statuses=all_statuses,
         selected_colors=ALL_COLORS,
     )
-    excel_bytes = export_excel(
-        latest,
-        selected_statuses=all_statuses,
-        selected_colors=ALL_COLORS,
-        prefiltered=filtered,
-    )
+    import inspect
+
+    if "prefiltered" in inspect.signature(export_excel).parameters:
+        excel_bytes = export_excel(
+            latest,
+            selected_statuses=all_statuses,
+            selected_colors=ALL_COLORS,
+            prefiltered=filtered,
+        )
+    else:
+        # Stale cached processor module: fall back to the double-filter path.
+        excel_bytes = export_excel(
+            latest,
+            selected_statuses=all_statuses,
+            selected_colors=ALL_COLORS,
+        )
     summary = {
         "total_processed": len(latest),
         "total_before_fichier_filter": rows_before,

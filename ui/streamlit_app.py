@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-28o"
+APP_VERSION = "2026-07-29a"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -75,9 +75,11 @@ def _cached_agent_statistics(
     )
 
 import engine.storage as _storage
+import engine.processor as _processor_mod
 import engine.database as database
 if not _ON_STREAMLIT_CLOUD:
     importlib.reload(_storage)
+    importlib.reload(_processor_mod)
     importlib.reload(database)
 import ui.brand_logo as brand_logo
 import ui.app_shell as app_shell
