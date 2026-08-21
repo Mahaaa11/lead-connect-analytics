@@ -29,11 +29,16 @@ DEFAULT_COLOR_FILLS: dict[str, str] = {
     "Blue": "5B9BD5",
     "Orange": "F4B183",
     "Red": "FF6666",
+    # Répondeur saturé (≥10) — visible à l'export, à ne pas rappeler
+    "Black": "212121",
 }
 
 ALL_COLORS = list(DEFAULT_COLOR_FILLS.keys())
+# Couleurs exploitables au téléphone (Noir exclu par défaut)
+EXPORTABLE_COLORS = [c for c in ALL_COLORS if c != "Black"]
 
 REPONDEUR_STATUS_CODE = "93"
+REPONDEUR_BLACK_MIN_CALLS = 10
 PRIOR_CONTACT_STATUS_CODES = {
     "2": "Refus",
     "4": "Pas de collaboration",
@@ -551,6 +556,8 @@ def compute_repondeur_profiles(hist_df: pd.DataFrame) -> pd.DataFrame:
     out["Ancien_Statut_Contact"] = out["Ancien_Statut_Contact"].fillna("")
 
     def _call_bucket(nb: int) -> str:
+        if nb >= REPONDEUR_BLACK_MIN_CALLS:
+            return f"≥{REPONDEUR_BLACK_MIN_CALLS} appels Répondeur"
         if nb <= 5:
             return "≤5 appels Répondeur"
         if nb == 6:
@@ -569,7 +576,11 @@ def compute_repondeur_profiles(hist_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def attach_repondeur_profiles(df: pd.DataFrame, hist_df: pd.DataFrame) -> pd.DataFrame:
-    """Add Répondeur profile columns; populated on rows whose current status is Répondeur."""
+    """Add Répondeur profile columns; populated on rows whose current status is Répondeur.
+
+    Fiches still on Répondeur with ≥ ``REPONDEUR_BLACK_MIN_CALLS`` hits are forced
+    to Color=Black so they stand out on export and are easy to skip for dialing.
+    """
     if df.empty:
         return df
 
@@ -584,6 +595,11 @@ def attach_repondeur_profiles(df: pd.DataFrame, hist_df: pd.DataFrame) -> pd.Dat
     out.loc[~is_repondeur, "Profil_Repondeur"] = ""
     out.loc[~is_repondeur, "Ancien_Statut_Contact"] = ""
     out.loc[~is_repondeur, "Nb_Appels_Repondeur"] = 0
+
+    if "Color" in out.columns:
+        saturated = is_repondeur & (out["Nb_Appels_Repondeur"] >= REPONDEUR_BLACK_MIN_CALLS)
+        out.loc[saturated, "Color"] = "Black"
+
     return out
 
 

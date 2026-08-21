@@ -73,8 +73,8 @@ def render_login_page() -> None:
         if db_error:
             st.error(
                 f"Impossible de joindre la base de données : {db_error}\n\n"
-                "Vérifiez **DATABASE_URL** dans `.env` (local) ou les secrets Streamlit "
-                "(format `postgresql://...?sslmode=require`)."
+                "Vérifiez **DATABASE_URL** / **MYSQL_*** dans `.env` (local) ou les secrets Streamlit "
+                "(TiDB : `mysql+pymysql://...` ou MYSQL_HOST / USER / PASSWORD)."
             )
 
         st.markdown(

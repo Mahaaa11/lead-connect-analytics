@@ -201,6 +201,8 @@ def _database_url_hint() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
         return f"SQLite local ({storage.STORE_DIR / 'recyclage.db'})"
+    if url.startswith("mysql") or os.environ.get("MYSQL_HOST", "").strip():
+        return "TiDB / MySQL"
     if url.startswith("postgresql") or url.startswith("postgres://"):
         return "PostgreSQL (DATABASE_URL)"
     return "Base configurée (DATABASE_URL)"

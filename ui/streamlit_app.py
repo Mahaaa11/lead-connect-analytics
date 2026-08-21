@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-07-29e"
+APP_VERSION = "2026-08-13a"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -105,6 +105,21 @@ import engine.forecast as forecast
 import engine.processor as processor
 import engine.vente_tracking as vente_tracking
 import engine.daily_tracking as daily_tracking
+import engine.daily_agent_reports as daily_agent_reports
+import engine.agent_day_performance as agent_day_performance
+if not _ON_STREAMLIT_CLOUD:
+    importlib.reload(dashboard)
+    importlib.reload(data_client_dashboard)
+    importlib.reload(vente_tracking)
+    importlib.reload(daily_tracking)
+    importlib.reload(daily_agent_reports)
+    importlib.reload(agent_day_performance)
+# Stale Streamlit module cache can miss newer constants — keep a local fallback.
+_PRIOR_COLOR_DISPLAY_ORDER = getattr(
+    data_client_dashboard,
+    "PRIOR_COLOR_DISPLAY_ORDER",
+    ["Vert", "Bleu", "Orange", "Rouge", "Sans contact précédent"],
+)
 from ui.data_client_board import render_data_client_board
 from ui.ventes_board import render_ventes_page
 from ui.app_shell import (
@@ -136,8 +151,13 @@ render_logout_button = login_page.render_logout_button
 import engine.analytics_hub as analytics_hub
 import engine.ventes_analytics as ventes_analytics
 from ui.agent_stats_board import render_agent_statistics
+import ui.agent_day_board as agent_day_board
+if not _ON_STREAMLIT_CLOUD:
+    importlib.reload(agent_day_board)
+from ui.agent_day_board import render_agent_day_performance_panel
 
 ALL_COLORS = processor.ALL_COLORS
+EXPORTABLE_COLORS = getattr(processor, "EXPORTABLE_COLORS", [c for c in ALL_COLORS if c != "Black"])
 DEFAULT_STATUS_MAPPING = processor.DEFAULT_STATUS_MAPPING
 export_excel = processor.export_excel
 prepare_export_data = processor.prepare_export_data
@@ -231,18 +251,21 @@ def _render_vente_daily_tracking(
     baseline_client_files: list,
     daily_vente_files: list,
     daily_histo_files: list | None = None,
+    daily_onoff_files: list | None = None,
     cohort_status_codes: list[int] | None = None,
     save_to_history: bool,
     analyze_btn: bool,
     capture_baseline_btn: bool,
 ) -> None:
     daily_histo_files = daily_histo_files or []
+    daily_onoff_files = daily_onoff_files or []
     cohort_status_codes = cohort_status_codes if cohort_status_codes is not None else [99]
 
     st.markdown(
-        "**Suivi quotidien** — deux analyses automatiques chaque jour :\n"
+        "**Suivi quotidien** — analyses automatiques chaque jour :\n"
         "1) **Cohorte baseline** (ex. Injoignables 99) → statut devenu dans l'historique.\n"
-        "2) **Ventes du jour** → statut d'origine sur le baseline (Book1 / export recyclage du matin)."
+        "2) **Ventes du jour** → statut d'origine sur le baseline (Book1 / export recyclage du matin).\n"
+        "3) **Rapports agents PDF** — origines des conversions + Pas de collab / Refus / durées Onoff."
     )
 
     baseline_frames: list[pd.DataFrame] = []
@@ -302,8 +325,8 @@ def _render_vente_daily_tracking(
     if not analyze_btn:
         st.info(
             "Workflow : 1) Uploader le **baseline du matin** (Book1, export recyclage ou capture base). "
-            "2) Uploader **export_histo** + **export_data_client** du jour. "
-            "3) **Lancer le suivi du jour**."
+            "2) Uploader **export_histo** + **export_data_client** + **b2b/Onoff** du jour. "
+            "3) **Lancer le suivi du jour** → Excel cohorte/ventes + **2 PDF agents**."
         )
         return
 
@@ -320,16 +343,25 @@ def _render_vente_daily_tracking(
     client_sources: list[tuple[Any, str]] = [
         (u, daily_tracking.parse_day_label_from_filename(u.name)) for u in daily_vente_files
     ]
+    onoff_sources = list(daily_onoff_files)
 
     vente_result: dict[str, Any] | None = None
     cohort_result: dict[str, Any] | None = None
     data_client_df: pd.DataFrame | None = None
+    histo_df: pd.DataFrame | None = None
+    agent_pdfs: dict[str, Any] | None = None
+    day_label = (
+        histo_sources[0][1]
+        if histo_sources
+        else (client_sources[0][1] if client_sources else datetime.now().strftime("%d/%m/%Y"))
+    )
 
     try:
         import importlib
 
         importlib.reload(vente_tracking)
         importlib.reload(daily_tracking)
+        importlib.reload(daily_agent_reports)
         importlib.reload(database)
 
         with st.spinner("Analyse du jour…"):
@@ -350,6 +382,7 @@ def _render_vente_daily_tracking(
                     cohort_status_codes=cohort_status_codes or None,
                     cohort_status_labels=cohort_labels or None,
                     data_client=data_client_df,
+                    onoff_sources=onoff_sources or None,
                     cohort_name="Injoignable (99)" if 99 in cohort_status_codes else "Cohorte",
                 )
                 if save_to_history and cohort_result and hasattr(
@@ -370,11 +403,30 @@ def _render_vente_daily_tracking(
                 if save_to_history:
                     saved = database.save_vente_tracking_batch(vente_result)
                     st.caption(f"{saved} vente(s) enregistrée(s) dans l'historique.")
+
+            if histo_df is not None and not histo_df.empty:
+                store_hist = None
+                try:
+                    store_hist = database.load_history()
+                except Exception:
+                    store_hist = None
+                for src in onoff_sources:
+                    if hasattr(src, "seek"):
+                        src.seek(0)
+                agent_pdfs = daily_agent_reports.generate_daily_agent_pdfs(
+                    histo=histo_df,
+                    data_client=data_client_df,
+                    onoff_sources=onoff_sources or None,
+                    store_history=store_hist,
+                    day_label=day_label,
+                )
     except Exception as exc:
         st.error(f"Analyse : {exc}")
         return
 
-    tab_cohorte, tab_ventes = st.tabs(["Évolution cohorte", "Ventes → baseline"])
+    tab_cohorte, tab_ventes, tab_pdfs = st.tabs(
+        ["Évolution cohorte", "Ventes → baseline", "Rapports agents PDF"]
+    )
 
     with tab_cohorte:
         if cohort_result is None:
@@ -385,7 +437,7 @@ def _render_vente_daily_tracking(
                 "Vérifiez le baseline ou les codes statut."
             )
         else:
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Cohorte baseline", f"{cohort_result['cohort_size']:,}")
             not_called = 0
             detail = cohort_result.get("detail", pd.DataFrame())
@@ -397,6 +449,9 @@ def _render_vente_daily_tracking(
             if not summary.empty and "Répondeur" in summary["Statut_devenu"].values:
                 repondeur_n = int(summary.loc[summary["Statut_devenu"] == "Répondeur", "Nombre"].sum())
             c3.metric("Devenus Répondeur", f"{repondeur_n:,}")
+            still_n = int(cohort_result.get("still_same_count", 0) or 0)
+            baseline_label = str(cohort_result.get("baseline_label") or "même statut")
+            c4.metric(f"Toujours « {baseline_label} »", f"{still_n:,}")
             st.caption(
                 "L'**export histo par-jour** ne contient que les appels **de cette journée**. "
                 "Les fiches « non appelé ce jour » étaient injoignables sur Book2 mais n'ont pas été "
@@ -406,10 +461,67 @@ def _render_vente_daily_tracking(
                 st.markdown("**Devenu (dernier statut historique)**")
                 st.bar_chart(summary.set_index("Statut_devenu")["Nombre"])
                 st.dataframe(summary, hide_index=True, use_container_width=True)
+
+            still = cohort_result.get("still_same_detail", pd.DataFrame())
+            if still is not None and not still.empty:
+                st.markdown(
+                    f"**Toujours « {baseline_label} »** — agent + durée Onoff "
+                    f"({len(still)} appel(s))"
+                )
+                st.caption(
+                    "Durée = **dernier appel** du fichier b2b/Onoff (pas le DUREE histo). "
+                    f"Match Onoff cohorte : {cohort_result.get('onoff_matched', 0):,}."
+                )
+                agent_summary = (
+                    still.groupby("Agent", dropna=False)
+                    .agg(
+                        Nombre=("TEL", "count"),
+                        Duree_moy_sec=("Duree_sec", "mean"),
+                        Duree_med_sec=("Duree_sec", "median"),
+                    )
+                    .reset_index()
+                    .sort_values("Nombre", ascending=False)
+                )
+                if not agent_summary.empty:
+                    agent_summary["Duree_moy_sec"] = agent_summary["Duree_moy_sec"].round(0)
+                    agent_summary["Duree_med_sec"] = agent_summary["Duree_med_sec"].round(0)
+                    st.dataframe(agent_summary, hide_index=True, use_container_width=True)
+                show_still = [
+                    c
+                    for c in [
+                        "TEL",
+                        "Agent",
+                        "Duree",
+                        "Duree_sec",
+                        "Duree_source",
+                        "dernier_contact",
+                        "contacts_histo",
+                    ]
+                    if c in still.columns
+                ]
+                st.dataframe(still[show_still], hide_index=True, use_container_width=True)
+
             detail = cohort_result.get("detail", pd.DataFrame())
             if not detail.empty:
-                st.markdown("**Détail cohorte**")
-                st.dataframe(detail, hide_index=True, use_container_width=True)
+                st.markdown("**Détail cohorte (tous)**")
+                show_detail = [
+                    c
+                    for c in [
+                        "TEL",
+                        "Statut_baseline",
+                        "devenu_histo",
+                        "Agent",
+                        "Duree",
+                        "Duree_source",
+                        "dernier_contact",
+                        "appele_ce_jour",
+                        "devenu_data",
+                        "Couleur_baseline",
+                        "contacts_histo",
+                    ]
+                    if c in detail.columns
+                ]
+                st.dataframe(detail[show_detail], hide_index=True, use_container_width=True)
 
     with tab_ventes:
         if vente_result is None:
@@ -455,6 +567,82 @@ def _render_vente_daily_tracking(
                     if c in detail.columns
                 ]
                 st.dataframe(detail[show_cols], hide_index=True, use_container_width=True)
+
+    with tab_pdfs:
+        st.markdown(
+            f"**Rapports agents — {day_label}**\n\n"
+            "Deux PDF générés automatiquement à partir de l'histo, data client et Onoff du jour :\n"
+            "1. **Origines des conversions** — statut précédent → vente, par agent\n"
+            "2. **Mix des statuts + Onoff** — tous les statuts posés, Pas de collab / Refus + durées"
+        )
+        if agent_pdfs is None:
+            st.info(
+                "Uploadez l'**export historique du jour** (+ data client et b2b/Onoff pour un "
+                "rapport complet) puis lancez le suivi."
+            )
+        else:
+            report_agents = agent_pdfs.get("agents") or []
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Ventes", f"{agent_pdfs.get('ventes_total', 0):,}")
+            c2.metric("Agents", f"{len(report_agents):,}")
+            prior = agent_pdfs.get("prior_total") or {}
+            c3.metric("Depuis Répondeur", f"{prior.get('Répondeur', 0):,}")
+
+            if report_agents:
+                preview = pd.DataFrame(
+                    [
+                        {
+                            "Agent": a["Agent"],
+                            "TEL": a["TEL"],
+                            "Ventes": a["Ventes"],
+                            "Taux_%": a["Taux"],
+                            "Répondeur": a.get("Repondeur", (a.get("outcomes") or {}).get("Répondeur", 0)),
+                            "Pas_de_collab": a["Pas_de_collab"],
+                            "Raccroche": a.get("Raccroche", (a.get("outcomes") or {}).get("Raccroche au nez", 0)),
+                            "Rappel_P": a.get("Rappel_Pers", (a.get("outcomes") or {}).get("Rappel Personnel", 0)),
+                            "RELANCE": a.get("Relance", (a.get("outcomes") or {}).get("RELANCE", 0)),
+                            "Refus": a["Refus"],
+                            "Autre": a.get("outcomes_autre", 0),
+                            "Ø_Onoff_PC": (
+                                daily_agent_reports._fmt_moy(a["Onoff_PasCollab_moy_sec"])
+                                if a["Pas_de_collab"]
+                                else "—"
+                            ),
+                            "Ø_Onoff_Refus": (
+                                daily_agent_reports._fmt_moy(a["Onoff_Refus_moy_sec"])
+                                if a["Refus"]
+                                else "—"
+                            ),
+                            "Σ_Onoff": a["Onoff_agent_tot_fmt"],
+                        }
+                        for a in report_agents
+                    ]
+                )
+                st.dataframe(preview, hide_index=True, use_container_width=True)
+
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "PDF 1 — Origines des conversions",
+                    data=agent_pdfs["pdf_conversions"],
+                    file_name=agent_pdfs["filename_conversions"],
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_pdf_conversions_agents",
+                )
+            with d2:
+                st.download_button(
+                    "PDF 2 — Pas de collab / Refus / Onoff",
+                    data=agent_pdfs["pdf_enriched"],
+                    file_name=agent_pdfs["filename_enriched"],
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_pdf_enriched_agents",
+                )
+            st.caption(
+                "Sans Onoff uploadé, les durées restent à 00:00:00. "
+                "L'origine des ventes utilise l'historique persisté s'il est disponible."
+            )
 
     if vente_result or cohort_result:
         excel_bytes = daily_tracking.export_daily_tracking_workbook(
@@ -764,9 +952,10 @@ def _render_performance_dashboard(
         else "—",
     )
 
-    tab_daily, tab_transitions, tab_vente, tab_vente_track, tab_buckets, tab_stale, tab_dupes, tab_retry, tab_outcomes = st.tabs(
+    tab_daily, tab_agent, tab_transitions, tab_vente, tab_vente_track, tab_buckets, tab_stale, tab_dupes, tab_retry, tab_outcomes = st.tabs(
         [
             "Résultats par jour",
+            "Performance agent",
             "Parcours statuts",
             "Conversion Vente",
             "Suivi ventes quotidien",
@@ -803,6 +992,31 @@ def _render_performance_dashboard(
                 st.dataframe(daily_conv, hide_index=True, use_container_width=True)
         else:
             st.info("Pas de résultats journaliers sur la période.")
+
+    with tab_agent:
+        try:
+            if use_store:
+                df_hist_agent = database.load_history()
+                onoff_agent = database.load_onoff_calls()
+            else:
+                if not hist_file:
+                    st.info("Chargez l'historique pour analyser un agent.")
+                    df_hist_agent = pd.DataFrame()
+                    onoff_agent = None
+                else:
+                    if str(hist_file.name).lower().endswith(".csv"):
+                        df_hist_agent = processor._read_csv(hist_file)
+                    else:
+                        df_hist_agent = processor._read_excel(hist_file, is_history=True)
+                    onoff_agent = None
+            if not df_hist_agent.empty:
+                render_agent_day_performance_panel(
+                    df_hist=df_hist_agent,
+                    onoff=onoff_agent,
+                    store_history=df_hist_agent,
+                )
+        except Exception as exc:
+            st.error(f"Erreur performance agent : {exc}")
 
     with tab_transitions:
         st.markdown(
@@ -2159,7 +2373,7 @@ with st.sidebar:
         v_month = month_values[v_month_idx]
         v_prior_colors = st.multiselect(
             "Couleur avant vente",
-            options=data_client_dashboard.PRIOR_COLOR_DISPLAY_ORDER,
+            options=_PRIOR_COLOR_DISPLAY_ORDER,
             default=[],
             key="ventes_prior_colors",
             help="Filtre sur la couleur du contact avant la vente. "
@@ -2207,18 +2421,36 @@ with st.sidebar:
             type=["xls", "xlsx", "xlsm", "csv"],
             accept_multiple_files=True,
             key="ventes_vt_daily_histo",
+            help="Fichier export_histo_…-par-jour — pas le rapport b2b/Onoff.",
         ) or []
         daily_vente_files = st.file_uploader(
             "Export data client du jour",
             type=["xls", "xlsx", "xlsm"],
             accept_multiple_files=True,
             key="ventes_vt_daily",
+            help="Fichier export_data_client_…-par-jour — pas le rapport b2b/Onoff.",
+        ) or []
+        daily_onoff_files = st.file_uploader(
+            "Onoff / b2b du jour (durées)",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            accept_multiple_files=True,
+            key="ventes_vt_daily_onoff",
+            help="Rapport b2b-statistics… — utilisé pour la durée d'appel (dernier appel par TEL).",
         ) or []
         cohort_status_codes = st.multiselect(
             "Cohorte à suivre (code STATUS baseline)",
-            options=[99, 93, 4, 2, 94, 92, 96],
+            options=[99, 93, 4, 2, 14, 94, 92, 96],
             default=[99],
-            format_func=lambda c: f"{c} — Injoignable" if c == 99 else str(c),
+            format_func=lambda c: {
+                99: "99 — Injoignable",
+                93: "93 — Répondeur",
+                4: "4 — Pas de collaboration",
+                2: "2 — Refus",
+                14: "14 — Raccroche au nez",
+                94: "94 — Rappel Personnel",
+                92: "92 — Absent",
+                96: "96 — Indisponible",
+            }.get(c, str(c)),
             key="ventes_vt_cohort_codes",
         )
         save_vente_history = st.checkbox(
@@ -2243,6 +2475,7 @@ with st.sidebar:
             "baseline_client_files": baseline_client_files,
             "daily_vente_files": daily_vente_files,
             "daily_histo_files": daily_histo_files,
+            "daily_onoff_files": daily_onoff_files,
             "cohort_status_codes": cohort_status_codes,
             "save_to_history": save_vente_history,
             "analyze_btn": analyze_ventes_btn,
@@ -2454,7 +2687,11 @@ with st.sidebar:
                     "Statuts", options=all_status_labels, default=all_status_labels, key="db_export_statuses"
                 )
                 selected_colors = st.multiselect(
-                    "Couleurs", options=ALL_COLORS, default=ALL_COLORS, key="db_export_colors"
+                    "Couleurs",
+                    options=ALL_COLORS,
+                    default=EXPORTABLE_COLORS,
+                    key="db_export_colors",
+                    help="Noir = Répondeur ≥10 fois (à ne pas rappeler / emailing).",
                 )
                 limit_enabled = st.checkbox("Limiter", value=True, key="db_limit_enabled")
                 limit_scope = st.radio(
@@ -2567,11 +2804,27 @@ with st.sidebar:
             accept_multiple_files=True,
             key="vt_daily_ventes",
         ) or []
+        daily_onoff_files = st.file_uploader(
+            "Onoff / b2b du jour (durées)",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            accept_multiple_files=True,
+            key="vt_daily_onoff",
+            help="Rapport b2b — durée d'appel (dernier appel par TEL).",
+        ) or []
         cohort_status_codes = st.multiselect(
             "Cohorte à suivre (code STATUS baseline)",
-            options=[99, 93, 4, 2, 94, 92, 96],
+            options=[99, 93, 4, 2, 14, 94, 92, 96],
             default=[99],
-            format_func=lambda c: f"{c} — Injoignable" if c == 99 else str(c),
+            format_func=lambda c: {
+                99: "99 — Injoignable",
+                93: "93 — Répondeur",
+                4: "4 — Pas de collaboration",
+                2: "2 — Refus",
+                14: "14 — Raccroche au nez",
+                94: "94 — Rappel Personnel",
+                92: "92 — Absent",
+                96: "96 — Indisponible",
+            }.get(c, str(c)),
             key="vt_cohort_codes",
         )
         save_vente_history = st.checkbox(
@@ -2598,6 +2851,7 @@ with st.sidebar:
             "baseline_client_files": baseline_client_files,
             "daily_vente_files": daily_vente_files,
             "daily_histo_files": daily_histo_files,
+            "daily_onoff_files": daily_onoff_files,
             "cohort_status_codes": cohort_status_codes,
             "save_to_history": save_vente_history,
             "analyze_btn": analyze_ventes_btn,
@@ -2794,7 +3048,10 @@ with st.sidebar:
             "Statuts à inclure", options=all_status_labels, default=all_status_labels
         )
         selected_colors = st.multiselect(
-            "Couleurs à inclure", options=ALL_COLORS, default=ALL_COLORS
+            "Couleurs à inclure",
+            options=ALL_COLORS,
+            default=EXPORTABLE_COLORS,
+            help="Noir = Répondeur ≥10 fois (exclu par défaut pour ne pas les rappeler).",
         )
 
         st.divider()

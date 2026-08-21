@@ -8,13 +8,56 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from engine.data_client_dashboard import (
-    PRIOR_COLOR_DISPLAY_ORDER,
-    STATUS_DISPLAY_ORDER,
-    color_hex_for_label,
-)
+from engine import data_client_dashboard as _dc
 from engine.status_labels import collapse_status_table
 from ui.brand_theme import NAVY, STATUS_CHART_COLORS
+
+PRIOR_COLOR_DISPLAY_ORDER = getattr(
+    _dc,
+    "PRIOR_COLOR_DISPLAY_ORDER",
+    ["Vert", "Bleu", "Orange", "Rouge", "Sans contact précédent"],
+)
+STATUS_DISPLAY_ORDER = _dc.STATUS_DISPLAY_ORDER
+color_hex_for_label = _dc.color_hex_for_label
+
+
+def _prepare_chart_df(
+    df: pd.DataFrame,
+    *,
+    label_col: str,
+    value_col: str,
+    top_n: int | None = None,
+    min_share: float | None = None,
+    other_label: str = "Autres (reste)",
+) -> pd.DataFrame:
+    """Keep top categories for charts; roll the long tail into one bar."""
+    plot_df = df[[label_col, value_col]].copy()
+    plot_df[value_col] = pd.to_numeric(plot_df[value_col], errors="coerce").fillna(0)
+    plot_df = plot_df.sort_values(value_col, ascending=False).reset_index(drop=True)
+    if plot_df.empty:
+        return plot_df
+
+    keep_mask = pd.Series(True, index=plot_df.index)
+    if min_share is not None and str(value_col).endswith("%"):
+        keep_mask &= plot_df[value_col] >= float(min_share)
+    if top_n is not None and top_n > 0:
+        keep_mask &= plot_df.index < int(top_n)
+    if not keep_mask.any():
+        keep_mask.iloc[0] = True
+
+    head = plot_df.loc[keep_mask].copy()
+    tail = plot_df.loc[~keep_mask]
+    if not tail.empty:
+        other_val = float(tail[value_col].sum())
+        if other_val > 0:
+            head = pd.concat(
+                [
+                    head,
+                    pd.DataFrame([{label_col: other_label, value_col: round(other_val, 2)}]),
+                ],
+                ignore_index=True,
+            )
+    return head.reset_index(drop=True)
 
 
 def _render_colored_bar_chart(
@@ -24,46 +67,102 @@ def _render_colored_bar_chart(
     value_col: str,
     color_from_label: bool = False,
     y_title: str = "",
-    height: int = 360,
+    height: int | None = None,
+    horizontal: bool = True,
+    top_n: int | None = 12,
+    min_share: float | None = 1.0,
 ) -> None:
-    """Bar chart with per-bar colors (couleur = légende, ou palette statuts)."""
+    """Readable bar chart: horizontal by default, collapsed long tail."""
     import plotly.graph_objects as go
 
     if df.empty or label_col not in df.columns or value_col not in df.columns:
         return
 
-    plot_df = df[[label_col, value_col]].copy()
-    if color_from_label:
-        bar_colors = [color_hex_for_label(str(l)) for l in plot_df[label_col]]
-    else:
-        bar_colors = STATUS_CHART_COLORS[: len(plot_df)]
-        if len(bar_colors) < len(plot_df):
-            bar_colors += STATUS_CHART_COLORS * (len(plot_df) // len(STATUS_CHART_COLORS) + 1)
-        bar_colors = bar_colors[: len(plot_df)]
+    plot_df = _prepare_chart_df(
+        df,
+        label_col=label_col,
+        value_col=value_col,
+        top_n=top_n,
+        min_share=min_share if str(value_col).endswith("%") else None,
+    )
+    if plot_df.empty:
+        return
 
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                x=plot_df[label_col].astype(str),
-                y=plot_df[value_col],
-                marker={"color": bar_colors},
-                text=plot_df[value_col].map(lambda v: f"{v:.1f}" if isinstance(v, float) else f"{v:,}"),
-                textposition="outside",
-            )
-        ]
-    )
-    fig.update_layout(
-        height=height,
-        margin={"l": 24, "r": 16, "t": 16, "b": 120},
-        xaxis_title="",
-        yaxis_title=y_title,
-        showlegend=False,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        font={"family": "Segoe UI, system-ui, sans-serif", "color": NAVY},
-        xaxis={"tickangle": -35},
-    )
+    if horizontal:
+        plot_df = plot_df.sort_values(value_col, ascending=True).reset_index(drop=True)
+
+    n = len(plot_df)
+    if color_from_label:
+        bar_colors = [color_hex_for_label(str(label)) for label in plot_df[label_col]]
+    else:
+        bar_colors = [STATUS_CHART_COLORS[i % len(STATUS_CHART_COLORS)] for i in range(n)]
+        if horizontal:
+            bar_colors = list(reversed(bar_colors))
+
+    labels = plot_df[label_col].astype(str)
+    values = plot_df[value_col]
+    is_pct = str(value_col).endswith("%")
+    text = values.map(lambda v: f"{float(v):.1f}%" if is_pct else f"{int(v):,}")
+
+    if horizontal:
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    y=labels,
+                    x=values,
+                    orientation="h",
+                    marker={"color": bar_colors},
+                    text=text,
+                    textposition="outside",
+                    cliponaxis=False,
+                )
+            ]
+        )
+        fig.update_layout(
+            height=height or max(320, 36 * n + 80),
+            margin={"l": 16, "r": 72, "t": 16, "b": 40},
+            xaxis_title=y_title,
+            yaxis_title="",
+            showlegend=False,
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font={"family": "Segoe UI, system-ui, sans-serif", "color": NAVY, "size": 12},
+            yaxis={"automargin": True, "tickfont": {"size": 12}},
+            xaxis={"gridcolor": "rgba(0,35,78,0.08)", "zeroline": False},
+        )
+    else:
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=labels,
+                    y=values,
+                    marker={"color": bar_colors},
+                    text=text,
+                    textposition="outside",
+                    cliponaxis=False,
+                )
+            ]
+        )
+        fig.update_layout(
+            height=height or 380,
+            margin={"l": 24, "r": 16, "t": 24, "b": 100},
+            xaxis_title="",
+            yaxis_title=y_title,
+            showlegend=False,
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font={"family": "Segoe UI, system-ui, sans-serif", "color": NAVY},
+            xaxis={"tickangle": -30, "automargin": True},
+        )
+
     st.plotly_chart(fig, use_container_width=True)
+    if top_n is not None or (min_share is not None and is_pct):
+        bits = ["Graphique : top catégories"]
+        if min_share is not None and is_pct:
+            bits.append(f"≥ {min_share:g} %")
+        if top_n is not None:
+            bits.append(f"max {top_n}")
+        st.caption(" · ".join(bits) + " — détail complet dans le tableau.")
 
 
 def _export_ventes_excel(metrics: dict[str, Any]) -> bytes:
@@ -130,48 +229,53 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
     )
 
     with tab_origine:
-        col_s, col_c = st.columns(2)
         by_status = metrics.get("conversion_by_prior_status", pd.DataFrame())
         by_color = metrics.get("conversion_by_prior_color", pd.DataFrame())
 
-        with col_s:
-            st.markdown("**Quel statut mène à la vente ?**")
-            st.caption(
-                "Statuts regroupés par nom (ex. tous les « Répondeur », avec ou sans sous-code). "
-                f"Encore « Autre » : **{metrics.get('ventes_autre_categorie', 0):,}**."
+        st.markdown("**Quel statut mène à la vente ?**")
+        st.caption(
+            "Statuts regroupés par nom (ex. tous les « Répondeur », avec ou sans sous-code). "
+            f"Encore « Autre » : **{metrics.get('ventes_autre_categorie', 0):,}**."
+        )
+        if not by_status.empty:
+            by_status = collapse_status_table(by_status, "Statut_précédent")
+            value_col = "Part_des_ventes_%" if "Part_des_ventes_%" in by_status.columns else "Ventes"
+            _render_colored_bar_chart(
+                by_status,
+                label_col="Statut_précédent",
+                value_col=value_col,
+                color_from_label=False,
+                y_title="% des ventes" if value_col == "Part_des_ventes_%" else "Ventes",
+                horizontal=True,
+                top_n=10,
+                min_share=1.0,
             )
-            if not by_status.empty:
-                by_status = collapse_status_table(by_status, "Statut_précédent")
-                value_col = "Part_des_ventes_%" if "Part_des_ventes_%" in by_status.columns else "Ventes"
-                _render_colored_bar_chart(
-                    by_status,
-                    label_col="Statut_précédent",
-                    value_col=value_col,
-                    color_from_label=False,
-                    y_title="% des ventes" if value_col == "Part_des_ventes_%" else "Ventes",
-                )
+            with st.expander("Tableau complet des statuts", expanded=False):
                 st.dataframe(by_status, hide_index=True, use_container_width=True)
-            else:
-                st.info("Pas de données statut précédent.")
+        else:
+            st.info("Pas de données statut précédent.")
 
-        with col_c:
-            st.markdown("**Quelle couleur mène à la vente ?**")
-            st.caption(
-                "Couleur du contact avant la vente (ancienneté du dernier contact). "
-                "« Sans contact précédent » = aucun appel antérieur dans l'historique."
+        st.markdown("**Quelle couleur mène à la vente ?**")
+        st.caption(
+            "Couleur du contact avant la vente (ancienneté du dernier contact). "
+            "« Sans contact précédent » = aucun appel antérieur dans l'historique."
+        )
+        if not by_color.empty:
+            value_col = "Part_des_ventes_%" if "Part_des_ventes_%" in by_color.columns else "Ventes"
+            _render_colored_bar_chart(
+                by_color,
+                label_col="Couleur_précédente",
+                value_col=value_col,
+                color_from_label=True,
+                y_title="% des ventes" if value_col == "Part_des_ventes_%" else "Ventes",
+                horizontal=True,
+                top_n=None,
+                min_share=None,
             )
-            if not by_color.empty:
-                value_col = "Part_des_ventes_%" if "Part_des_ventes_%" in by_color.columns else "Ventes"
-                _render_colored_bar_chart(
-                    by_color,
-                    label_col="Couleur_précédente",
-                    value_col=value_col,
-                    color_from_label=True,
-                    y_title="% des ventes" if value_col == "Part_des_ventes_%" else "Ventes",
-                )
+            with st.expander("Tableau des couleurs", expanded=False):
                 st.dataframe(by_color, hide_index=True, use_container_width=True)
-            else:
-                st.info("Pas de données couleur précédente.")
+        else:
+            st.info("Pas de données couleur précédente.")
 
     with tab_codes:
         st.markdown("**Codes STATUS hors mapping — vrais noms**")

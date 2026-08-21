@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Lance l'app en mode LOCAL — SQLite (data/store/recyclage.db).
-# Le cloud utilise PostgreSQL via DATABASE_URL dans les secrets Streamlit.
+# Le cloud utilise TiDB (MYSQL_* / DATABASE_URL) dans les secrets Streamlit.
 set -euo pipefail
 cd "$(dirname "$0")"
 unset DATABASE_URL

@@ -367,10 +367,46 @@ div[data-testid="stMetric"] [data-testid="stMetricValue"] {{
     box-shadow: 0 4px 16px rgba(0,35,78,0.04) !important;
 }}
 [data-testid="stFileUploader"] {{
-    background: {CARD_BG};
-    border: 1px dashed {BORDER};
-    border-radius: 14px;
-    padding: 8px;
+    background: {CARD_BG} !important;
+    border: 1px dashed {BORDER} !important;
+    border-radius: 14px !important;
+    padding: 8px !important;
+}}
+/* Sidebar uploaders: cream cards need dark text (sidebar forces white elsewhere) */
+section[data-testid="stSidebar"] [data-testid="stFileUploader"],
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] * {{
+    color: {NAVY} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] {{
+    background: {CREAM} !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] section,
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"],
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] > div {{
+    background: {WARM_WHITE} !important;
+    color: {NAVY} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] svg {{
+    fill: {NAVY} !important;
+    stroke: {NAVY} !important;
+    color: {NAVY} !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] small,
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] span,
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] p,
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] label {{
+    color: {NAVY} !important;
+    opacity: 1 !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] button {{
+    color: {NAVY} !important;
+    background: rgba(0, 35, 78, 0.06) !important;
+    border: 1px solid rgba(0, 35, 78, 0.2) !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"],
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] {{
+    color: {NAVY} !important;
 }}
 </style>
 """

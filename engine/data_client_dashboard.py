@@ -32,6 +32,7 @@ COLOR_TO_DISPLAY: dict[str, str] = {
     "Blue": "Bleu",
     "Orange": "Orange",
     "Red": "Rouge",
+    "Black": "Noir",
     "Unknown": "Noir",
 }
 DISPLAY_TO_COLOR: dict[str, str] = {v: k for k, v in COLOR_TO_DISPLAY.items()}
@@ -41,13 +42,14 @@ COLOR_HEX: dict[str, str] = {
     "Bleu": "#2196F3",
     "Orange": "#FF9800",
     "Rouge": "#F44336",
-    "Noir": "#424242",
+    "Noir": "#212121",
     "Sans contact précédent": "#424242",
     # Aliases (legacy / internal keys)
     "Jaune": "#2196F3",
     "Green": "#4CAF50",
     "Blue": "#2196F3",
     "Red": "#F44336",
+    "Black": "#212121",
     "Unknown": "#424242",
 }
 

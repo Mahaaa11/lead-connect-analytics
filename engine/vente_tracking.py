@@ -141,6 +141,10 @@ def merge_baseline_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return combined.drop_duplicates("TEL", keep="first").reset_index(drop=True)
 
 
+def _source_name(source: Any) -> str:
+    return str(getattr(source, "name", source) or source)
+
+
 def extract_ventes_from_client_exports(
     sources: list[tuple[Any, str]],
 ) -> pd.DataFrame:
@@ -151,8 +155,17 @@ def extract_ventes_from_client_exports(
             source.seek(0)
         df = _read_excel(source, is_history=False)
         df = _normalize_columns(df)
-        tel_col = _find_column(df, TEL_ALIASES) or "TEL"
-        status_col = _find_column(df, STATUS_ALIASES) or "STATUS"
+        tel_col = _find_column(df, TEL_ALIASES)
+        status_col = _find_column(df, STATUS_ALIASES)
+        if not tel_col or tel_col not in df.columns:
+            raise ValueError(
+                f"Colonne TEL introuvable dans « {_source_name(source)} ». "
+                "Utilisez l'export data client du jour — pas le fichier b2b/Onoff."
+            )
+        if not status_col or status_col not in df.columns:
+            raise ValueError(
+                f"Colonne STATUS introuvable dans « {_source_name(source)} »."
+            )
         df = df.rename(columns={tel_col: "TEL", status_col: "STATUS"})
         df["TEL"] = _clean_tel_db(df["TEL"])
         codes = pd.to_numeric(df["STATUS"], errors="coerce")
