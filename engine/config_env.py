@@ -97,27 +97,57 @@ def _mysql_url_from_parts() -> str | None:
     )
 
 
-def resolve_database_url() -> str:
-    """Cloud: TiDB/MySQL or PostgreSQL via DATABASE_URL / MYSQL_*. Local: SQLite."""
-    bootstrap_env()
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        built = _mysql_url_from_parts()
-        if built:
-            url = built
-        else:
-            DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            return f"sqlite:///{DEFAULT_SQLITE_PATH}"
+def _running_on_streamlit_cloud() -> bool:
+    """Streamlit Community Cloud mounts the app under /mount/src."""
+    return Path("/mount/src").is_dir() or os.environ.get("STREAMLIT_CLOUD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
+
+def _normalize_db_url(url: str) -> str:
     if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
+        return url.replace("postgres://", "postgresql://", 1)
     if url.startswith("mysql://"):
-        url = url.replace("mysql://", "mysql+pymysql://", 1)
-    if url.startswith(("postgresql", "mysql+pymysql://", "mysql://", "sqlite:")):
+        return url.replace("mysql://", "mysql+pymysql://", 1)
+    return url
+
+
+def _sqlite_url() -> str:
+    DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{DEFAULT_SQLITE_PATH}"
+
+
+def resolve_database_url() -> str:
+    """Cloud: TiDB only (MYSQL_* or mysql DATABASE_URL). Local: SQLite via FORCE_SQLITE / run.sh."""
+    bootstrap_env()
+    on_cloud = _running_on_streamlit_cloud()
+    force_sqlite = os.environ.get("FORCE_SQLITE", "").strip().lower() in ("1", "true", "yes")
+    if force_sqlite and not on_cloud:
+        return _sqlite_url()
+
+    mysql = _mysql_url_from_parts()
+    raw = os.environ.get("DATABASE_URL", "").strip()
+    url = _normalize_db_url(mysql or raw)
+
+    if on_cloud:
+        if url.startswith("mysql+pymysql://"):
+            return url
+        raise RuntimeError(
+            "Cloud Recyclage Exporter utilise TiDB. "
+            "Dans Streamlit → App settings → Secrets, mets MYSQL_HOST, MYSQL_USER, "
+            "MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_SSL=true "
+            "(et retire l’ancien DATABASE_URL Neon/Postgres s’il est encore là)."
+        )
+
+    # Local unchanged: SQLite by default, existing DATABASE_URL still accepted.
+    if not url:
+        return _sqlite_url()
+    if url.startswith(("mysql+pymysql://", "postgresql://", "sqlite:")):
         return url
     raise RuntimeError(
-        "DATABASE_URL non reconnu. Utilisez mysql+pymysql://... (TiDB), "
-        "postgresql://..., MYSQL_* secrets, ou laissez vide pour SQLite local."
+        "DATABASE_URL non reconnu. Cloud: secrets MYSQL_* (TiDB). Local: ./run.sh (SQLite)."
     )
 
 
@@ -128,6 +158,10 @@ def is_postgresql_backend() -> bool:
 def is_mysql_backend() -> bool:
     url = resolve_database_url()
     return url.startswith("mysql+pymysql://") or url.startswith("mysql://")
+
+
+# Alias for stale Streamlit reloads that still import the old name.
+is_mysql_backend = is_mysql_backend
 
 
 def is_cloud_sql_backend() -> bool:

@@ -485,7 +485,18 @@ def append_history(df: pd.DataFrame, engine: Engine | None = None) -> int:
 
 def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> int:
     dedupe_cols = ["TEL"]
-    for col in ("DATE", "HEURE", "STATUS", "DATETIME"):
+    for col in (
+        "DATE",
+        "HEURE",
+        "STATUS",
+        "DATETIME",
+        "STATUS_ID",
+        "STATUS_DATE",
+        "STATUS_STARTTIME",
+        "DUREE",
+        "TV",
+        "LIB_STATUS",
+    ):
         if col in df.columns:
             dedupe_cols.append(col)
 
@@ -510,37 +521,31 @@ def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> int:
         return 0
 
     dialect = conn.dialect.name
+    chunk_size = 2000
     if dialect == "postgresql":
-        conn.execute(
-            text(
-                """
-                INSERT INTO history_rows (tel, row_hash, data, created_at)
-                VALUES (:tel, :row_hash, :data, :created_at)
-                ON CONFLICT (row_hash) DO NOTHING
-                """
-            ),
-            rows,
+        sql = text(
+            """
+            INSERT INTO history_rows (tel, row_hash, data, created_at)
+            VALUES (:tel, :row_hash, :data, :created_at)
+            ON CONFLICT (row_hash) DO NOTHING
+            """
         )
     elif _is_mysql_dialect(dialect):
-        conn.execute(
-            text(
-                """
-                INSERT IGNORE INTO history_rows (tel, row_hash, data, created_at)
-                VALUES (:tel, :row_hash, :data, :created_at)
-                """
-            ),
-            rows,
+        sql = text(
+            """
+            INSERT IGNORE INTO history_rows (tel, row_hash, data, created_at)
+            VALUES (:tel, :row_hash, :data, :created_at)
+            """
         )
     else:
-        conn.execute(
-            text(
-                """
-                INSERT OR IGNORE INTO history_rows (tel, row_hash, data, created_at)
-                VALUES (:tel, :row_hash, :data, :created_at)
-                """
-            ),
-            rows,
+        sql = text(
+            """
+            INSERT OR IGNORE INTO history_rows (tel, row_hash, data, created_at)
+            VALUES (:tel, :row_hash, :data, :created_at)
+            """
         )
+    for start in range(0, len(rows), chunk_size):
+        conn.execute(sql, rows[start : start + chunk_size])
     return len(rows)
 
 

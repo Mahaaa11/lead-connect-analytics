@@ -85,10 +85,12 @@ def _cached_agent_statistics(
         days_back=int(days_back) if int(days_back) > 0 else None,
     )
 
+import engine.config_env as _config_env
 import engine.storage as _storage
 import engine.processor as _processor_mod
 import engine.database as database
 if not _ON_STREAMLIT_CLOUD:
+    importlib.reload(_config_env)
     importlib.reload(_storage)
     importlib.reload(_processor_mod)
     importlib.reload(database)

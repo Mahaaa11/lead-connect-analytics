@@ -24,7 +24,7 @@ cp .env.example .env               # optionnel
 
 Repo GitHub : [ogenies/LC-analytics](https://github.com/ogenies/LC-analytics)
 
-L’app cloud utilise **TiDB Cloud** (MySQL protocol via `MYSQL_*` ou `DATABASE_URL`), pas le fichier SQLite local.
+L’app cloud utilise **uniquement TiDB Cloud** (`MYSQL_*` dans les secrets Streamlit). Neon/Postgres n’est plus utilisé. En local : SQLite via `./run.sh`.
 
 ### Accéder à l’app
 
