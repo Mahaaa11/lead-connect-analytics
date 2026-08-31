@@ -91,19 +91,24 @@ def render_global_data_source(
 ) -> dict[str, Any]:
     """Shared data source for analytics modules — always the persistent database."""
     st.markdown("**Source de données**")
+    stats = store_stats or {}
+    backend = stats.get("database_url_hint") or stats.get("backend") or ""
+    schema = stats.get("schema") or ""
+    if backend:
+        st.caption(f"Connexion · {backend}" + (f" · schéma `{schema}`" if schema else ""))
     if store_exists:
-        stats = store_stats or {}
         st.caption(
             f"Base persistante · {stats.get('db_tels', 0):,} TEL · "
             f"{stats.get('hist_rows', 0):,} lignes histo · "
             f"MAJ {str(stats.get('last_update', '—'))[:10]}"
         )
     else:
-        db_rows = (store_stats or {}).get("db_rows", 0)
-        hist_rows = (store_stats or {}).get("hist_rows", 0)
+        db_rows = stats.get("db_rows", 0)
+        hist_rows = stats.get("hist_rows", 0)
         st.warning(
             f"Base persistante vide (client **{db_rows:,}**, histo **{hist_rows:,}**). "
-            "Relancez la migration PostgreSQL ou importez via **Base de données**."
+            "Vérifiez `MYSQL_DATABASE = \"test\"` dans les secrets Streamlit, reboot, "
+            "ou importez via **Base de données**."
         )
     return {"use_store": store_exists, "db_file": None, "hist_file": None}
 

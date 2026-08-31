@@ -166,9 +166,13 @@ def get_store_stats() -> dict[str, Any]:
         meta = _load_meta()
         counts = _get_store_counts()
         initialized = counts["db_rows"] > 0 and counts["hist_rows"] > 0
+        schema = ""
+        if hasattr(storage, "current_schema_name"):
+            schema = storage.current_schema_name()
         stats: dict[str, Any] = {
             "initialized": initialized,
             "backend": storage.backend_label(),
+            "schema": schema,
             "database_url_hint": _database_url_hint(),
             "last_update": meta.get("last_update"),
             "db_rows": counts["db_rows"],
@@ -186,6 +190,7 @@ def get_store_stats() -> dict[str, Any]:
         return {
             "initialized": False,
             "backend": storage.backend_label(),
+            "schema": os.environ.get("MYSQL_DATABASE", "").strip(),
             "database_url_hint": _database_url_hint(),
             "last_update": None,
             "db_rows": 0,
@@ -198,14 +203,16 @@ def get_store_stats() -> dict[str, Any]:
 
 
 def _database_url_hint() -> str:
+    mysql_host = os.environ.get("MYSQL_HOST", "").strip()
+    mysql_db = os.environ.get("MYSQL_DATABASE", "").strip()
     url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        return f"SQLite local ({storage.STORE_DIR / 'recyclage.db'})"
-    if url.startswith("mysql") or os.environ.get("MYSQL_HOST", "").strip():
-        return "TiDB / MySQL"
+    if mysql_host or url.startswith("mysql"):
+        return f"TiDB / MySQL ({mysql_db or 'test'})"
     if url.startswith("postgresql") or url.startswith("postgres://"):
         return "PostgreSQL (DATABASE_URL)"
-    return "Base configurée (DATABASE_URL)"
+    if url:
+        return "Base configurée (DATABASE_URL)"
+    return f"SQLite local ({storage.STORE_DIR / 'recyclage.db'})"
 
 
 def _save_merged_onoff(

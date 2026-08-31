@@ -46,12 +46,41 @@ def _count_rows(engine, table: str) -> int:
         return int(conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one())
 
 
-def _truncate_target(engine) -> None:
-    with engine.begin() as conn:
+def _reset_target(engine) -> None:
+    """Drop + recreate instead of DELETE (TiDB Serverless kills large DELETEs on memory)."""
+    with engine.connect() as conn:
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
+        conn.commit()
         for table in reversed(TABLES):
-            conn.execute(text(f"DELETE FROM {table}"))
+            conn.execute(text(f"DROP TABLE IF EXISTS `{table}`"))
+            conn.commit()
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+        conn.commit()
+    storage._schema_initialized = False  # noqa: SLF001
+    storage.init_schema(engine)
+
+
+def _copy_table(src, dst, table: str, chunk_size: int) -> int:
+    import pandas as pd
+
+    total = _count_rows(src, table)
+    if total == 0:
+        print(f"  {table:16} — vide, ignoré")
+        return 0
+    copied = 0
+    for chunk in pd.read_sql(f"SELECT * FROM {table}", src, chunksize=chunk_size):
+        if table in DROP_ID_COLUMNS and "id" in chunk.columns:
+            chunk = chunk.drop(columns=["id"])
+        chunk.to_sql(
+            table,
+            dst,
+            if_exists="append",
+            index=False,
+            method="multi",
+        )
+        copied += len(chunk)
+        print(f"  {table:16} {copied:>10,} / {total:,}", flush=True)
+    return copied
 
 
 def _mysql_connect_args(url: str) -> dict:
@@ -66,10 +95,8 @@ def migrate(
     sqlite_path: Path,
     database_url: str,
     dry_run: bool = False,
-    chunk_size: int = 1000,
+    chunk_size: int = 200,
 ) -> None:
-    import pandas as pd
-
     if not sqlite_path.is_file():
         raise FileNotFoundError(f"SQLite introuvable : {sqlite_path}")
 
@@ -95,30 +122,12 @@ def migrate(
     print("Cible  : TiDB / MySQL")
 
     # Reset storage schema flag so init_schema runs on this engine
-    storage._schema_initialized = False  # noqa: SLF001
-    print("\nInitialisation schéma TiDB…")
-    storage.init_schema(dst)
-    print("Vidage des tables cibles…")
-    _truncate_target(dst)
+    print("\nReset schéma TiDB (DROP + CREATE, pas de DELETE)…")
+    _reset_target(dst)
 
     print("\nMigration en cours…")
     for table in TABLES:
-        df = pd.read_sql(f"SELECT * FROM {table}", src)
-        if table in DROP_ID_COLUMNS and "id" in df.columns:
-            df = df.drop(columns=["id"])
-        if df.empty:
-            print(f"  {table:16} — vide, ignoré")
-            continue
-        # pandas may need chunked inserts for large history
-        df.to_sql(
-            table,
-            dst,
-            if_exists="append",
-            index=False,
-            chunksize=chunk_size,
-            method="multi",
-        )
-        print(f"  {table:16} {len(df):>10,} lignes")
+        _copy_table(src, dst, table, chunk_size)
 
     print("\nVérification :")
     ok = True
@@ -150,7 +159,7 @@ def main() -> None:
         help="URL mysql+pymysql://... (sinon DATABASE_URL / MYSQL_*)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Volumes seulement")
-    parser.add_argument("--chunk-size", type=int, default=1000)
+    parser.add_argument("--chunk-size", type=int, default=200)
     args = parser.parse_args()
 
     url = args.database_url.strip()

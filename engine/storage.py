@@ -269,25 +269,39 @@ def store_has_data(engine: Engine | None = None) -> bool:
     return counts["db_rows"] > 0 and counts["hist_rows"] > 0
 
 
+def current_schema_name(engine: Engine | None = None) -> str:
+    engine = engine or get_engine()
+    dialect = engine.dialect.name
+    with engine.connect() as conn:
+        if dialect in ("mysql", "mariadb"):
+            return str(conn.execute(text("SELECT DATABASE()")).scalar() or "")
+        if dialect == "postgresql":
+            return str(conn.execute(text("SELECT current_schema()")).scalar() or "")
+    return "sqlite"
+
+
 def get_store_counts(engine: Engine | None = None) -> dict[str, int]:
-    """Single round-trip counts for store metrics (Neon-friendly)."""
+    """Cheap COUNT(*) per table. Avoid COUNT(DISTINCT) — TiDB Serverless kills it on memory."""
     engine = engine or get_engine()
     init_schema(engine)
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM client_db) AS db_rows,
-                    (SELECT COUNT(*) FROM history_rows) AS hist_rows,
-                    (SELECT COUNT(DISTINCT tel) FROM history_rows) AS hist_tels,
-                    (SELECT COUNT(*) FROM onoff_calls) AS onoff_rows,
-                    (SELECT COUNT(DISTINCT tel) FROM onoff_calls) AS onoff_tels,
-                    (SELECT COUNT(*) FROM onoff_totals) AS onoff_totals_rows
-                """
-            )
-        ).mappings().one()
-    return {key: int(row[key] or 0) for key in row.keys()}
+
+    def _n(conn, table: str) -> int:
+        return int(conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one() or 0)
+
+    with engine.connect() as conn:
+        db_rows = _n(conn, "client_db")
+        hist_rows = _n(conn, "history_rows")
+        onoff_rows = _n(conn, "onoff_calls")
+        onoff_totals_rows = _n(conn, "onoff_totals")
+        conn.commit()
+    return {
+        "db_rows": db_rows,
+        "hist_rows": hist_rows,
+        "hist_tels": hist_rows,
+        "onoff_rows": onoff_rows,
+        "onoff_tels": onoff_rows,
+        "onoff_totals_rows": onoff_totals_rows,
+    }
 
 
 def list_client_tels(engine: Engine | None = None) -> set[str]:

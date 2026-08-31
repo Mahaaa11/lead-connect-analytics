@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-08-13a"
+APP_VERSION = "2026-08-31a"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -2198,6 +2198,9 @@ with st.sidebar:
     render_logout_button()
     st.caption(f"Version {APP_VERSION}")
     app_mode = render_navigation(default="overview")
+
+    if st.session_state.get("overview_refresh"):
+        _invalidate_store_caches()
 
     store_stats = _cached_store_stats()
     store_ready = bool(store_stats.get("initialized"))
