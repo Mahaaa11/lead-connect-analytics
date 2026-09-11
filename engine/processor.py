@@ -974,8 +974,9 @@ def process_data(
         return pd.DataFrame()
 
     if "HEURE" in df_hist.columns:
-        df_hist["HEURE_cleaned"] = df_hist["HEURE"].fillna(0).astype(int).astype(str)
-        df_hist["HEURE_cleaned"] = df_hist["HEURE_cleaned"].str.zfill(4)
+        hours = pd.to_numeric(df_hist["HEURE"], errors="coerce").fillna(0).astype(int)
+        hours = hours.clip(lower=0, upper=2359)
+        df_hist["HEURE_cleaned"] = hours.astype(str).str.zfill(4)
         df_hist["HEURE_cleaned"] = (
             df_hist["HEURE_cleaned"].str[:2] + ":" + df_hist["HEURE_cleaned"].str[2:]
         )
