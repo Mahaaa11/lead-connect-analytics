@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 STORE_DIR = Path(__file__).resolve().parents[1] / "data" / "store"
 
@@ -747,10 +749,21 @@ def _insert_compact_rows(conn, rows: list[dict[str, Any]]) -> None:
         conn.execute(sql, rows[start : start + chunk])
 
 
+def _heure_from_start(start: object, fallback: object = None) -> object:
+    raw = "".join(ch for ch in str(start or "") if ch.isdigit())
+    if len(raw) >= 4:
+        return raw[:4]
+    return fallback
+
+
 def _records_from_compact_scan(
     engine: Engine,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Stream slim JSON fields. Keep latest per TEL, every vente, recent events."""
+    """Stream slim JSON fields. Keep latest per TEL, every vente, recent events.
+
+    Dialer dumps store the call outcome in STATUS_STATUS / STATUS_DATE, while
+    STATUS / DATE are the current fiche. Both code-1 sources are ventes.
+    """
     latest: dict[str, tuple[tuple[str, str, int], dict[str, Any]]] = {}
     extra: dict[tuple[Any, ...], dict[str, Any]] = {}
     cutoff = (datetime.now() - timedelta(days=COMPACT_RECENT_DAYS)).strftime("%Y%m%d")
@@ -762,35 +775,81 @@ def _records_from_compact_scan(
             JSON_UNQUOTE(JSON_EXTRACT(data, '$.HEURE')) AS heure,
             JSON_UNQUOTE(JSON_EXTRACT(data, '$.LIB_STATUS')) AS lib_status,
             JSON_UNQUOTE(JSON_EXTRACT(data, '$.TV')) AS tv,
-            JSON_UNQUOTE(JSON_EXTRACT(data, '$.DUREE')) AS duree
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.DUREE')) AS duree,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.STATUS_STATUS')) AS status_status,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.STATUS_DATE')) AS status_date,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.STATUS_STARTTIME')) AS status_start,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.STATUS_ID')) AS status_id
         FROM history_rows
         WHERE id > :lo AND id <= :hi
         """
     )
     scanned = 0
-    with engine.connect() as conn:
-        max_id = int(conn.execute(text("SELECT COALESCE(MAX(id), 0) FROM history_rows")).scalar_one())
-        step = 40_000
-        lo = 0
-        while lo < max_id:
-            hi = min(lo + step, max_id)
-            rows = conn.execute(sql, {"lo": lo, "hi": hi}).fetchall()
-            scanned += len(rows)
-            for row in rows:
-                row_id, tel, status, date_s, heure_s, lib_status, tv, duree = row
-                rec = _slim_rec(tel, status, date_s, heure_s, lib_status, tv, duree)
-                tel_s = rec["TEL"]
-                key = _event_sort_tuple(date_s, heure_s, row_id)
-                prev = latest.get(tel_s)
-                if prev is None or key >= prev[0]:
-                    latest[tel_s] = (key, rec)
-                status_s = _status_code(status)
-                date_d = key[0]
-                keep_extra = status_s == "1" or date_d >= cutoff
-                if keep_extra:
-                    sig = (tel_s, str(date_s), str(heure_s), str(status), "extra")
-                    extra[sig] = rec
-            lo = hi
+    lo = 0
+    max_id: int | None = None
+    step = 40_000
+    while True:
+        try:
+            with engine.connect() as conn:
+                if max_id is None:
+                    max_id = int(
+                        conn.execute(
+                            text("SELECT COALESCE(MAX(id), 0) FROM history_rows")
+                        ).scalar_one()
+                    )
+                while lo < max_id:
+                    hi = min(lo + step, max_id)
+                    rows = conn.execute(sql, {"lo": lo, "hi": hi}).fetchall()
+                    scanned += len(rows)
+                    for row in rows:
+                        (
+                            row_id,
+                            tel,
+                            status,
+                            date_s,
+                            heure_s,
+                            lib_status,
+                            tv,
+                            duree,
+                            status_status,
+                            status_date,
+                            status_start,
+                            status_id,
+                        ) = row
+                        rec = _slim_rec(
+                            tel, status, date_s, heure_s, lib_status, tv, duree
+                        )
+                        tel_s = rec["TEL"]
+                        key = _event_sort_tuple(date_s, heure_s, row_id)
+                        prev = latest.get(tel_s)
+                        if prev is None or key >= prev[0]:
+                            latest[tel_s] = (key, rec)
+                        status_s = _status_code(status)
+                        css = _status_code(status_status)
+                        date_d = key[0]
+                        keep_extra = status_s == "1" or date_d >= cutoff
+                        if keep_extra:
+                            sig = (tel_s, str(date_s), str(heure_s), str(status), "extra")
+                            extra[sig] = rec
+                        if css == "1":
+                            sale_date = status_date or date_s
+                            sale_heure = _heure_from_start(status_start, heure_s)
+                            sale_rec = _slim_rec(
+                                tel,
+                                "1",
+                                sale_date,
+                                sale_heure,
+                                lib_status or "Vente",
+                                tv,
+                                duree,
+                            )
+                            sid = str(status_id or "") or str(sale_date)
+                            extra[(tel_s, sid, "ss1")] = sale_rec
+                    lo = hi
+            break
+        except OperationalError:
+            time.sleep(2)
+            engine = get_engine()
 
     out = [item[1] for item in latest.values()]
     seen = {
