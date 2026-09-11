@@ -42,12 +42,16 @@ def compute_overview_metrics(
     top_colors = []
     if not color_df.empty:
         for _, row in color_df.head(4).iterrows():
-            if int(row.get("Nombre de Lead", 0)) > 0:
+            try:
+                count = int(float(row.get("Nombre de Lead", 0) or 0))
+            except (TypeError, ValueError):
+                count = 0
+            if count > 0:
                 top_colors.append(
                     {
                         "label": row["Couleur"],
-                        "count": int(row["Nombre de Lead"]),
-                        "pct": float(row["% de la Data Client"]),
+                        "count": count,
+                        "pct": float(row.get("% de la Data Client") or 0),
                     }
                 )
 

@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-09-11b"
+APP_VERSION = "2026-09-11c"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -814,7 +814,10 @@ def _render_overview_dashboard(
         render_overview_board(metrics)
         st.session_state["overview_metrics"] = metrics
     except Exception as exc:
+        import traceback
+
         st.error(f"Erreur vue d'ensemble : {exc}")
+        st.code(traceback.format_exc())
 
 
 def _render_ventes_analytics(

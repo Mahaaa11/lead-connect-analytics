@@ -131,7 +131,11 @@ def render_section_header(title: str, subtitle: str, *, badge: str | None = None
 
 
 def _fmt(n: int | float) -> str:
-    return f"{int(n):,}".replace(",", "\u202f")
+    try:
+        value = int(float(n))
+    except (TypeError, ValueError):
+        return "0"
+    return f"{value:,}".replace(",", "\u202f")
 
 
 def _color_bars_html(top_colors: list[dict[str, Any]]) -> str:
