@@ -21,7 +21,7 @@ from engine.config_env import bootstrap_env
 
 bootstrap_env()
 
-APP_VERSION = "2026-09-11c"
+APP_VERSION = "2026-09-11d"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -32,6 +32,10 @@ def _cached_store_stats() -> dict[str, Any]:
 def _invalidate_store_caches() -> None:
     _cached_store_stats.clear()
     _cached_agent_statistics.clear()
+    try:
+        _cached_store_frames.clear()
+    except NameError:
+        pass
     for key in (
         "data_client_metrics_key",
         "performance_metrics_key",
@@ -89,6 +93,13 @@ import engine.config_env as _config_env
 import engine.storage as _storage
 import engine.processor as _processor_mod
 import engine.database as database
+
+
+@st.cache_data(ttl=180, show_spinner="Chargement de l'historique…")
+def _cached_store_frames(_token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return database.load_db(), database.load_history()
+
+
 if not _ON_STREAMLIT_CLOUD:
     importlib.reload(_config_env)
     importlib.reload(_storage)
@@ -765,7 +776,7 @@ def _load_analytics_frames(
     if use_store:
         if not database.store_exists():
             return None
-        return database.load_db(), database.load_history()
+        return _cached_store_frames(_store_cache_token())
     if not db_file or not hist_file:
         return None
     df_db = processor._read_excel(db_file, is_history=False)

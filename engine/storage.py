@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +100,18 @@ def init_schema(engine: Engine | None = None) -> None:
             created_at VARCHAR(64) NOT NULL,
             UNIQUE KEY uq_history_row_hash (row_hash)
         );
+        CREATE TABLE IF NOT EXISTS history_compact (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            tel VARCHAR(64) NOT NULL,
+            kind VARCHAR(16) NOT NULL,
+            status VARCHAR(32) NULL,
+            date_val VARCHAR(32) NULL,
+            heure VARCHAR(32) NULL,
+            lib_status VARCHAR(255) NULL,
+            tv VARCHAR(255) NULL,
+            duree VARCHAR(64) NULL,
+            UNIQUE KEY uq_history_compact (kind, tel, date_val, heure, status)
+        );
         CREATE TABLE IF NOT EXISTS onoff_calls (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             tel VARCHAR(64) NOT NULL,
@@ -165,6 +177,17 @@ def init_schema(engine: Engine | None = None) -> None:
             row_hash TEXT NOT NULL UNIQUE,
             data TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS history_compact (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tel TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT,
+            date_val TEXT,
+            heure TEXT,
+            lib_status TEXT,
+            tv TEXT,
+            duree TEXT
         );
         CREATE TABLE IF NOT EXISTS onoff_calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -483,50 +506,90 @@ def replace_history(df: pd.DataFrame, engine: Engine | None = None) -> None:
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM history_rows"))
         if df.empty:
+            conn.execute(text("DELETE FROM history_compact"))
             return
         _insert_history_rows(conn, df, now)
+    _sync_history_compact_after_write(df, engine, replaced=True)
 
 
-def append_history(df: pd.DataFrame, engine: Engine | None = None) -> int:
+def append_history(
+    df: pd.DataFrame,
+    engine: Engine | None = None,
+    *,
+    return_inserted_count: bool = True,
+) -> int:
     engine = engine or get_engine()
     init_schema(engine)
     if df.empty:
         return 0
     now = datetime.now().isoformat(timespec="seconds")
     with engine.begin() as conn:
-        return _insert_history_rows(conn, df, now)
+        before = 0
+        if return_inserted_count:
+            before = int(conn.execute(text("SELECT COUNT(*) FROM history_rows")).scalar_one())
+        attempted = _insert_history_rows(conn, df, now)
+        after = before
+        if return_inserted_count:
+            after = int(conn.execute(text("SELECT COUNT(*) FROM history_rows")).scalar_one())
+        inserted = max(0, after - before) if return_inserted_count else attempted
+    if inserted:
+        _sync_history_compact_after_write(df, engine, replaced=False)
+    return inserted if return_inserted_count else attempted
+
+
+def _hash_part_series(df: pd.DataFrame, col: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series([""] * len(df), index=df.index, dtype="object")
+    return (
+        df[col]
+        .where(df[col].notna(), "")
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
+        .replace({"nan": "", "None": "", "<NA>": ""})
+    )
+
+
+def _history_row_hashes(df: pd.DataFrame) -> pd.Series:
+    """One hash per dialer event.
+
+    Legacy rows (daily fusion) only have TEL|DATE|HEURE|STATUS.
+    Full WeKiwi histo dumps also have INDICE + STATUS_DATE + STATUS_STARTTIME
+    — without those, 1.5M call lines collapse to ~89k keys.
+    """
+    tel = _hash_part_series(df, "TEL")
+    date = _hash_part_series(df, "DATE")
+    heure = _hash_part_series(df, "HEURE")
+    status = _hash_part_series(df, "STATUS")
+    base = tel + "|" + date + "|" + heure + "|" + status
+    indice = _hash_part_series(df, "INDICE")
+    status_date = _hash_part_series(df, "STATUS_DATE")
+    start = _hash_part_series(df, "STATUS_STARTTIME")
+    status_id = _hash_part_series(df, "STATUS_ID")
+    extra = indice + "|" + status_date + "|" + start + "|" + status_id
+    has_event = extra.str.replace("|", "", regex=False).str.len() > 0
+    return base.where(~has_event, base + "|" + extra)
 
 
 def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> int:
-    dedupe_cols = ["TEL"]
-    for col in (
-        "DATE",
-        "HEURE",
-        "STATUS",
-        "DATETIME",
-        "STATUS_ID",
-        "STATUS_DATE",
-        "STATUS_STARTTIME",
-        "DUREE",
-        "TV",
-        "LIB_STATUS",
-    ):
-        if col in df.columns:
-            dedupe_cols.append(col)
+    if df.empty or "TEL" not in df.columns:
+        return 0
+
+    work = df.copy()
+    work["_row_hash"] = _history_row_hashes(work)
+    work = work.drop_duplicates(subset=["_row_hash"], keep="first")
+    hashes = work["_row_hash"].tolist()
+    payload = work.drop(columns=["_row_hash"])
+    records = json.loads(payload.to_json(orient="records", date_format="iso"))
 
     rows = []
-    seen: set[str] = set()
-    for _, row in df.iterrows():
-        hash_parts = [row.get(col, "") for col in dedupe_cols]
-        row_hash = _row_hash(hash_parts)
-        if row_hash in seen:
-            continue
-        seen.add(row_hash)
+    for rec, row_hash in zip(records, hashes):
+        tel = rec.get("TEL")
         rows.append(
             {
-                "tel": str(row["TEL"]),
+                "tel": "" if tel is None else str(tel),
                 "row_hash": row_hash,
-                "data": _df_row_to_json(row),
+                "data": json.dumps(rec, default=str, separators=(",", ":")),
                 "created_at": now,
             }
         )
@@ -535,7 +598,7 @@ def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> int:
         return 0
 
     dialect = conn.dialect.name
-    chunk_size = 2000
+    chunk_size = 800 if _is_mysql_dialect(dialect) else 4000
     if dialect == "postgresql":
         sql = text(
             """
@@ -563,12 +626,408 @@ def _insert_history_rows(conn, df: pd.DataFrame, now: str) -> int:
     return len(rows)
 
 
-def load_history(engine: Engine | None = None) -> pd.DataFrame:
-    engine = engine or get_engine()
-    init_schema(engine)
+COMPACT_HISTORY_THRESHOLD = 250_000
+COMPACT_RECENT_DAYS = 180
+
+
+def _event_sort_tuple(date_s: object, heure_s: object, row_id: int = 0) -> tuple[str, str, int]:
+    date_d = "".join(ch for ch in str(date_s or "") if ch.isdigit())[:8].ljust(8, "0")
+    heure_d = "".join(ch for ch in str(heure_s or "") if ch.isdigit())[:6].ljust(4, "0")
+    return (date_d, heure_d, int(row_id or 0))
+
+
+def _status_code(status: object) -> str:
+    return str(status or "").replace(".0", "").strip()
+
+
+def _slim_rec(
+    tel: object,
+    status: object,
+    date_s: object,
+    heure_s: object,
+    lib_status: object = None,
+    tv: object = None,
+    duree: object = None,
+) -> dict[str, Any]:
+    return {
+        "TEL": "" if tel is None else str(tel),
+        "STATUS": status,
+        "DATE": date_s,
+        "HEURE": heure_s,
+        "LIB_STATUS": lib_status,
+        "TV": tv,
+        "DUREE": duree,
+    }
+
+
+def _ensure_history_compact_table(engine: Engine) -> None:
+    dialect = engine.dialect.name
+    if _is_mysql_dialect(dialect):
+        stmt = """
+            CREATE TABLE IF NOT EXISTS history_compact (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                tel VARCHAR(64) NOT NULL,
+                kind VARCHAR(16) NOT NULL,
+                status VARCHAR(32) NULL,
+                date_val VARCHAR(32) NULL,
+                heure VARCHAR(32) NULL,
+                lib_status VARCHAR(255) NULL,
+                tv VARCHAR(255) NULL,
+                duree VARCHAR(64) NULL,
+                UNIQUE KEY uq_history_compact (kind, tel, date_val, heure, status)
+            )
+        """
+    else:
+        stmt = """
+            CREATE TABLE IF NOT EXISTS history_compact (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tel TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT,
+                date_val TEXT,
+                heure TEXT,
+                lib_status TEXT,
+                tv TEXT,
+                duree TEXT
+            )
+        """
+        if dialect == "postgresql":
+            stmt = stmt.replace("AUTOINCREMENT", "GENERATED BY DEFAULT AS IDENTITY")
+    with engine.begin() as conn:
+        conn.execute(text(stmt))
+
+
+def _compact_payload(rec: dict[str, Any], kind: str) -> dict[str, Any]:
+    return {
+        "tel": str(rec.get("TEL") or ""),
+        "kind": kind,
+        "status": None if rec.get("STATUS") is None else str(rec.get("STATUS")),
+        "date_val": None if rec.get("DATE") is None else str(rec.get("DATE")),
+        "heure": None if rec.get("HEURE") is None else str(rec.get("HEURE")),
+        "lib_status": None if rec.get("LIB_STATUS") is None else str(rec.get("LIB_STATUS")),
+        "tv": None if rec.get("TV") is None else str(rec.get("TV")),
+        "duree": None if rec.get("DUREE") is None else str(rec.get("DUREE")),
+    }
+
+
+def _insert_compact_rows(conn, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    dialect = conn.dialect.name
+    if dialect == "postgresql":
+        sql = text(
+            """
+            INSERT INTO history_compact
+                (tel, kind, status, date_val, heure, lib_status, tv, duree)
+            VALUES
+                (:tel, :kind, :status, :date_val, :heure, :lib_status, :tv, :duree)
+            ON CONFLICT DO NOTHING
+            """
+        )
+    elif _is_mysql_dialect(dialect):
+        sql = text(
+            """
+            INSERT IGNORE INTO history_compact
+                (tel, kind, status, date_val, heure, lib_status, tv, duree)
+            VALUES
+                (:tel, :kind, :status, :date_val, :heure, :lib_status, :tv, :duree)
+            """
+        )
+    else:
+        sql = text(
+            """
+            INSERT OR IGNORE INTO history_compact
+                (tel, kind, status, date_val, heure, lib_status, tv, duree)
+            VALUES
+                (:tel, :kind, :status, :date_val, :heure, :lib_status, :tv, :duree)
+            """
+        )
+    chunk = 800 if _is_mysql_dialect(dialect) else 4000
+    for start in range(0, len(rows), chunk):
+        conn.execute(sql, rows[start : start + chunk])
+
+
+def _records_from_compact_scan(
+    engine: Engine,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Stream slim JSON fields. Keep latest per TEL, every vente, recent events."""
+    latest: dict[str, tuple[tuple[str, str, int], dict[str, Any]]] = {}
+    extra: dict[tuple[Any, ...], dict[str, Any]] = {}
+    cutoff = (datetime.now() - timedelta(days=COMPACT_RECENT_DAYS)).strftime("%Y%m%d")
+    sql = text(
+        """
+        SELECT id, tel,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.STATUS')) AS status,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.DATE')) AS date,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.HEURE')) AS heure,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.LIB_STATUS')) AS lib_status,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.TV')) AS tv,
+            JSON_UNQUOTE(JSON_EXTRACT(data, '$.DUREE')) AS duree
+        FROM history_rows
+        WHERE id > :lo AND id <= :hi
+        """
+    )
+    scanned = 0
+    with engine.connect() as conn:
+        max_id = int(conn.execute(text("SELECT COALESCE(MAX(id), 0) FROM history_rows")).scalar_one())
+        step = 40_000
+        lo = 0
+        while lo < max_id:
+            hi = min(lo + step, max_id)
+            rows = conn.execute(sql, {"lo": lo, "hi": hi}).fetchall()
+            scanned += len(rows)
+            for row in rows:
+                row_id, tel, status, date_s, heure_s, lib_status, tv, duree = row
+                rec = _slim_rec(tel, status, date_s, heure_s, lib_status, tv, duree)
+                tel_s = rec["TEL"]
+                key = _event_sort_tuple(date_s, heure_s, row_id)
+                prev = latest.get(tel_s)
+                if prev is None or key >= prev[0]:
+                    latest[tel_s] = (key, rec)
+                status_s = _status_code(status)
+                date_d = key[0]
+                keep_extra = status_s == "1" or date_d >= cutoff
+                if keep_extra:
+                    sig = (tel_s, str(date_s), str(heure_s), str(status), "extra")
+                    extra[sig] = rec
+            lo = hi
+
+    out = [item[1] for item in latest.values()]
+    seen = {
+        (r.get("TEL"), str(r.get("DATE")), str(r.get("HEURE")), str(r.get("STATUS")))
+        for r in out
+    }
+    extra_n = 0
+    for rec in extra.values():
+        sig = (rec.get("TEL"), str(rec.get("DATE")), str(rec.get("HEURE")), str(rec.get("STATUS")))
+        if sig in seen:
+            continue
+        out.append(rec)
+        seen.add(sig)
+        extra_n += 1
+    return out, scanned, extra_n
+
+
+def _replace_history_compact(engine: Engine, records: list[dict[str, Any]]) -> None:
+    _ensure_history_compact_table(engine)
+    cutoff = (datetime.now() - timedelta(days=COMPACT_RECENT_DAYS)).strftime("%Y%m%d")
+    latest_by_tel: dict[str, tuple[tuple[str, str, int], dict[str, Any]]] = {}
+    for rec in records:
+        tel = str(rec.get("TEL") or "")
+        key = _event_sort_tuple(rec.get("DATE"), rec.get("HEURE"), 0)
+        prev = latest_by_tel.get(tel)
+        if prev is None or key >= prev[0]:
+            latest_by_tel[tel] = (key, rec)
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for rec in (item[1] for item in latest_by_tel.values()):
+        payload = _compact_payload(rec, "latest")
+        sig = ("latest", payload["tel"], payload["date_val"], payload["heure"], payload["status"])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        rows.append(payload)
+    for rec in records:
+        status_s = _status_code(rec.get("STATUS"))
+        date_d = _event_sort_tuple(rec.get("DATE"), rec.get("HEURE"), 0)[0]
+        kind = "vente" if status_s == "1" else "recent"
+        if kind == "recent" and date_d < cutoff:
+            continue
+        payload = _compact_payload(rec, kind)
+        sig = (kind, payload["tel"], payload["date_val"], payload["heure"], payload["status"])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        rows.append(payload)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM history_compact"))
+        _insert_compact_rows(conn, rows)
+    meta = load_meta(engine)
+    meta["history_compact_source_count"] = count_history_rows(engine)
+    meta["history_compact_rows"] = len(rows)
+    meta["history_compact_built_at"] = datetime.now().isoformat(timespec="seconds")
+    save_meta(meta, engine)
+
+
+def _load_history_from_compact(engine: Engine) -> pd.DataFrame:
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT tel, status, date_val, heure, lib_status, tv, duree
+                FROM history_compact
+                """
+            )
+        )
+        rows = result.fetchall()
+    records = [
+        _slim_rec(tel, status, date_s, heure_s, lib_status, tv, duree)
+        for tel, status, date_s, heure_s, lib_status, tv, duree in rows
+    ]
+    return pd.DataFrame(records)
+
+
+def _compact_is_fresh(engine: Engine, hist_n: int) -> bool:
+    _ensure_history_compact_table(engine)
+    with engine.begin() as conn:
+        compact_n = int(conn.execute(text("SELECT COUNT(*) FROM history_compact")).scalar_one())
+    if compact_n <= 0:
+        return False
+    meta = load_meta(engine)
+    return int(meta.get("history_compact_source_count") or 0) == hist_n
+
+
+def _load_history_all(engine: Engine) -> pd.DataFrame:
     with engine.begin() as conn:
         result = conn.execute(text("SELECT data FROM history_rows"))
         records = [json.loads(row[0]) for row in result.fetchall()]
+    return pd.DataFrame(records)
+
+
+def refresh_history_compact(engine: Engine | None = None) -> pd.DataFrame:
+    """Rebuild the slim history cache used by Streamlit Cloud."""
+    engine = engine or get_engine()
+    init_schema(engine)
+    _ensure_history_compact_table(engine)
+    records, _scanned, _extra_n = _records_from_compact_scan(engine)
+    _replace_history_compact(engine, records)
+    return pd.DataFrame(records)
+
+
+def _sync_history_compact_after_write(
+    df: pd.DataFrame,
+    engine: Engine,
+    *,
+    replaced: bool,
+) -> None:
+    if not _is_mysql_dialect(engine.dialect.name):
+        return
+    n = count_history_rows(engine)
+    _ensure_history_compact_table(engine)
+    if n <= COMPACT_HISTORY_THRESHOLD:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM history_compact"))
+        meta = load_meta(engine)
+        meta["history_compact_source_count"] = n
+        save_meta(meta, engine)
+        return
+    if replaced:
+        meta = load_meta(engine)
+        meta["history_compact_source_count"] = -1
+        save_meta(meta, engine)
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM history_compact"))
+        return
+    if not _compact_has_rows(engine):
+        return
+    records = _slim_records_from_frame(df)
+    if not records:
+        return
+    _merge_compact_from_records(engine, records)
+    meta = load_meta(engine)
+    meta["history_compact_source_count"] = n
+    save_meta(meta, engine)
+
+
+def _compact_has_rows(engine: Engine) -> bool:
+    with engine.begin() as conn:
+        return int(conn.execute(text("SELECT COUNT(*) FROM history_compact")).scalar_one()) > 0
+
+
+def _slim_records_from_frame(df: pd.DataFrame) -> list[dict[str, Any]]:
+    if df.empty or "TEL" not in df.columns:
+        return []
+    records: list[dict[str, Any]] = []
+    for rec in json.loads(df.to_json(orient="records", date_format="iso")):
+        records.append(
+            _slim_rec(
+                rec.get("TEL"),
+                rec.get("STATUS"),
+                rec.get("DATE"),
+                rec.get("HEURE"),
+                rec.get("LIB_STATUS"),
+                rec.get("TV"),
+                rec.get("DUREE"),
+            )
+        )
+    return records
+
+
+def _merge_compact_from_records(engine: Engine, records: list[dict[str, Any]]) -> None:
+    cutoff = (datetime.now() - timedelta(days=COMPACT_RECENT_DAYS)).strftime("%Y%m%d")
+    latest_by_tel: dict[str, tuple[tuple[str, str, int], dict[str, Any]]] = {}
+    extra_rows: list[dict[str, Any]] = []
+    for rec in records:
+        tel = str(rec.get("TEL") or "")
+        key = _event_sort_tuple(rec.get("DATE"), rec.get("HEURE"), 0)
+        prev = latest_by_tel.get(tel)
+        if prev is None or key >= prev[0]:
+            latest_by_tel[tel] = (key, rec)
+        status_s = _status_code(rec.get("STATUS"))
+        date_d = key[0]
+        if status_s == "1":
+            extra_rows.append(_compact_payload(rec, "vente"))
+        elif date_d >= cutoff:
+            extra_rows.append(_compact_payload(rec, "recent"))
+    tels = [tel for tel in latest_by_tel if tel]
+    existing: dict[str, tuple[str, str]] = {}
+    if tels:
+        with engine.begin() as conn:
+            for start in range(0, len(tels), 400):
+                chunk = tels[start : start + 400]
+                placeholders = ", ".join(f":t{i}" for i in range(len(chunk)))
+                params = {f"t{i}": tel for i, tel in enumerate(chunk)}
+                rows = conn.execute(
+                    text(
+                        f"""
+                        SELECT tel, date_val, heure
+                        FROM history_compact
+                        WHERE kind = 'latest' AND tel IN ({placeholders})
+                        """
+                    ),
+                    params,
+                ).fetchall()
+                for tel, date_s, heure_s in rows:
+                    existing[str(tel)] = (str(date_s or ""), str(heure_s or ""))
+    replace_tels: list[str] = []
+    latest_rows: list[dict[str, Any]] = []
+    for tel, packed in latest_by_tel.items():
+        rec = packed[1]
+        new_key = packed[0]
+        old = existing.get(tel)
+        if old is None or new_key >= _event_sort_tuple(old[0], old[1], 0):
+            replace_tels.append(tel)
+            latest_rows.append(_compact_payload(rec, "latest"))
+    with engine.begin() as conn:
+        if replace_tels:
+            for start in range(0, len(replace_tels), 400):
+                chunk = replace_tels[start : start + 400]
+                placeholders = ", ".join(f":t{i}" for i in range(len(chunk)))
+                params = {f"t{i}": tel for i, tel in enumerate(chunk)}
+                conn.execute(
+                    text(
+                        f"DELETE FROM history_compact WHERE kind = 'latest' AND tel IN ({placeholders})"
+                    ),
+                    params,
+                )
+            _insert_compact_rows(conn, latest_rows)
+        _insert_compact_rows(conn, extra_rows)
+
+
+def load_history(engine: Engine | None = None, *, full: bool = False) -> pd.DataFrame:
+    engine = engine or get_engine()
+    init_schema(engine)
+    n = count_history_rows(engine)
+    if (
+        full
+        or n <= COMPACT_HISTORY_THRESHOLD
+        or not _is_mysql_dialect(engine.dialect.name)
+    ):
+        return _load_history_all(engine)
+    if _compact_is_fresh(engine, n):
+        return _load_history_from_compact(engine)
+    records, _scanned, _extra_n = _records_from_compact_scan(engine)
+    _replace_history_compact(engine, records)
     return pd.DataFrame(records)
 
 
