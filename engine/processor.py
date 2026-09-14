@@ -53,6 +53,64 @@ DATE_ALIASES = ("DATE", "DATE_APPEL", "DATE_CONTACT")
 ONOFF_CONTACT_ALIASES = ("CONTACT NUMBER", "CONTACT_NUMBER", "CONTACT", *TEL_ALIASES)
 ONOFF_DURATION_ALIASES = ("DURATION", "DUREE", "DURÉE", "DUREE_APPEL", "CALL DURATION")
 
+# Fiche WeKiwi : toujours reprendre la data client (l'histo a les mêmes en-têtes, souvent vides).
+FICHE_COLUMNS_FROM_DB = frozenset(
+    {
+        "INDICE",
+        "PRIORITE",
+        "VERSOP",
+        "RAPPEL",
+        "ID_TV",
+        "LIB_DETAIL",
+        "T_PROFIL",
+        "ERRN1",
+        "TEL2",
+        "ERRN2",
+        "DATEOPE",
+        "MEMOTEL",
+        "TAXATION",
+        "QUOTA",
+        "NB_RAP",
+        "MEMORAPPEL",
+        "MEMOVERSOP",
+        "TZBEGIN",
+        "TZEND",
+        "EXPR1",
+        "EXPR2",
+        "CIV",
+        "NOM",
+        "PRENOM",
+        "DATENAIS",
+        "ADRESSE",
+        "CP",
+        "VILLE",
+        "EMAIL",
+        "FRSELECT",
+        "FRSGAZ",
+        "PDL",
+        "PCE",
+        "PUISSANCE",
+        "TYPECOMP",
+        "IBAN",
+        "BIC",
+        "NBR_RACCOR",
+        "NUM_CLIENT",
+        "FICHIER",
+        "DATE_INJECTION",
+        "FICHIER2",
+        "COMMENTAIR",
+        "TYPE_LOGEMENT",
+        "NBR_PERSONNE",
+        "PROPR_LOCATAIRE",
+        "SURFACE",
+        "MODE_CHAUFFAGE",
+        "NBR_RADIATEURS",
+        "CALLBACK_AGENT",
+        "CALLBACK_DATE",
+        "BROUILLON",
+    }
+)
+
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -830,8 +888,45 @@ def attach_onoff_durations(
     return out, stats
 
 
+def _series_is_blank(s: pd.Series) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s.isna()
+    if pd.api.types.is_numeric_dtype(s):
+        return s.isna()
+    text = s.astype("string").str.strip()
+    return s.isna() | text.isna() | text.eq("") | text.str.lower().isin(["nan", "none", "nat", "<na>"])
+
+
+def _merge_db_fiche_fields(latest: pd.DataFrame, df_db: pd.DataFrame) -> pd.DataFrame:
+    """Attach client-DB fiche columns, filling blanks left empty by history dumps."""
+    if latest.empty or df_db.empty or "TEL" not in latest.columns or "TEL" not in df_db.columns:
+        return latest
+    db = df_db.drop_duplicates(subset=["TEL"], keep="last")
+    db_cols = [c for c in db.columns if c != "TEL"]
+    if not db_cols:
+        return latest
+    out = latest.copy()
+    merged = out.merge(db[["TEL"] + db_cols], on="TEL", how="left", suffixes=("", "__db"))
+    for col in db_cols:
+        db_col = f"{col}__db"
+        if db_col not in merged.columns:
+            continue
+        db_vals = merged[db_col]
+        db_blank = _series_is_blank(db_vals)
+        if col not in out.columns:
+            merged[col] = db_vals.where(~db_blank)
+        elif col in FICHE_COLUMNS_FROM_DB:
+            merged[col] = db_vals.where(~db_blank, merged[col])
+        else:
+            hist_blank = _series_is_blank(merged[col])
+            merged[col] = merged[col].where(~hist_blank, db_vals)
+        merged = merged.drop(columns=[db_col])
+    return merged
+
+
 def _order_export_columns(columns: list[str]) -> list[str]:
     priority = [
+        "INDICE",
         "TEL",
         "Total_Duration",
         "Duree_Dernier_Appel",
@@ -1011,10 +1106,7 @@ def process_data(
         stats["latest_before_status_filter"] - stats["latest_rows"]
     )
 
-    db_unique_cols = [col for col in df_db.columns if col not in latest.columns and col != "TEL"]
-    if db_unique_cols and not latest.empty:
-        df_db_subset = df_db[["TEL"] + db_unique_cols]
-        latest = pd.merge(latest, df_db_subset, on="TEL", how="left")
+    latest = _merge_db_fiche_fields(latest, df_db)
 
     if return_stats:
         return latest, stats
