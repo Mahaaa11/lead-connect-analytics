@@ -85,6 +85,19 @@ def _conversion_table(
     )
 
 
+def _true_ventes(vente_trans: pd.DataFrame) -> pd.DataFrame:
+    """Keep first STATUS=1 per TEL. Ignore dumps where the previous line was already a sale."""
+    if vente_trans.empty:
+        return vente_trans
+    out = vente_trans.copy()
+    if "Prior_Status_Code" in out.columns:
+        prior = _status_code_series(out["Prior_Status_Code"])
+        out = out[prior != SALE_STATUS_CODE].copy()
+    if out.empty:
+        return out
+    return out.sort_values("DATE").drop_duplicates(subset=["TEL"], keep="first")
+
+
 def _filter_prior_statuses(vente_trans: pd.DataFrame, prior_statuses: list[str]) -> pd.DataFrame:
     if vente_trans.empty or not prior_statuses:
         return vente_trans
@@ -117,6 +130,7 @@ def compute_ventes_analytics(
     ].copy()
 
     vente_trans = _filter_ventes_period(all_vente_trans, year=year, month=month)
+    vente_trans = _true_ventes(vente_trans)
     if vente_trans.empty and (year is not None or month is not None):
         return _empty_result(year=year, month=month)
 
@@ -128,8 +142,8 @@ def compute_ventes_analytics(
 
     label_col = "Prior_Status_Label" if "Prior_Status_Label" in transitions.columns else "Prior_Status"
 
-    total_ventes = len(vente_trans)
-    unique_tels = int(vente_trans["TEL"].nunique()) if not vente_trans.empty else 0
+    total_ventes = int(vente_trans["TEL"].nunique()) if not vente_trans.empty else 0
+    unique_tels = total_ventes
     unique_tels_hist = int(hist["TEL"].nunique())
     overall_rate = round(100 * unique_tels / unique_tels_hist, 2) if unique_tels_hist else 0.0
 

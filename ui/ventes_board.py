@@ -171,7 +171,7 @@ def _export_ventes_excel(metrics: dict[str, Any]) -> bytes:
         pd.DataFrame(
             {
                 "Indicateur": [
-                    "Ventes (événements)",
+                    "Ventes (TEL unique STATUS=1)",
                     "TEL uniques vendus",
                     "Taux vente / base TEL",
                     "Sans statut précédent",
@@ -216,7 +216,10 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
     c2.metric("TEL uniques", f"{metrics['ventes_unique_tels']:,}")
     c3.metric("Taux / base TEL", f"{metrics['overall_vente_rate_pct']}%")
     c4.metric("Sans statut précédent", f"{metrics['ventes_sans_statut_precedent']:,}")
-    st.caption(f"Période : **{period}** · MAJ {metrics['generated_at']}")
+    st.caption(
+        f"Période : **{period}** · MAJ {metrics['generated_at']}. "
+        "Vente = STATUS=1, TEL unique. On ignore les re-dumps déjà en vente (code avant = 1)."
+    )
 
     tab_origine, tab_codes, tab_matrix, tab_jour, tab_detail = st.tabs(
         [
@@ -353,7 +356,10 @@ def render_ventes_page(metrics: dict[str, Any]) -> bytes | None:
                 if c in detail.columns
             ]
             st.dataframe(detail[show].head(1000), hide_index=True, use_container_width=True)
-            st.caption(f"{len(detail):,} vente(s) au total — affichage limité à 1 000 lignes.")
+            st.caption(
+                f"{len(detail):,} vente(s) TEL unique — affichage limité à 1 000 lignes. "
+                "« Avant vente » = dernier statut qui n’était pas déjà Vente."
+            )
         else:
             st.info("Pas de détail disponible.")
 
